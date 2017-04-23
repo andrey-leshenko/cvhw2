@@ -57,6 +57,7 @@ using cv::Vec3b;
 using cv::Point;
 using cv::Rect;
 using cv::CascadeClassifier;
+using cv::PCA;
 
 #define QQQ do {std::cerr << "QQQ " << __FUNCTION__ << " " << __LINE__ << std::endl;} while(0)
 
@@ -73,6 +74,13 @@ void printTimeSinceLastCall(const char* message)
 
 	last = curr;
 }
+
+struct Dataset
+{
+	vector<Mat> images;
+	vector<int> labels;
+	vector<string> labelNames;
+};
 
 inline void ltrim(std::string &s)
 {
@@ -157,6 +165,20 @@ void readDataset(const char* path, vector<Mat> &images, vector<int> &labels, vec
 	std::cout << std::endl << "<<< DATASET END" << std::endl;
 }
 
+void readDataset(const char *path, Dataset &dataset)
+{
+	readDataset(path, dataset.images, dataset.labels, dataset.labelNames);
+}
+
+void addToDataset(Dataset &a, const Dataset &other)
+{
+	for (Mat m : other.images) {
+		a.images.push_back(m.clone());
+	}
+	a.labels.insert(a.labels.begin(), other.labels.begin(), other.labels.end());
+	a.labelNames.insert(a.labelNames.begin(), other.labelNames.begin(), other.labelNames.end());
+}
+
 void normalizeFace(
 		InputArray _src,
 		OutputArray _dst,
@@ -197,7 +219,7 @@ void normalizeFace(
 		cv::normalize(dst, dst, 0, 255, cv::NORM_MINMAX, CV_8UC1);
 
 		cv::imshow("w", dst);
-		cv::waitKey(0);
+		cv::waitKey(1);
 	}
 	else {
 		Mat display;
@@ -217,6 +239,115 @@ void normalizeFace(
 	}
 }
 
+void normalizeFaceDataset(
+		Dataset &dataset,
+		CascadeClassifier &faceClassifier,
+		CascadeClassifier &eyeClassifier,
+		int outputSize = 128)
+{
+	for (Mat &m : dataset.images) {
+		normalizeFace(
+				m,
+				m,
+				faceClassifier,
+				eyeClassifier,
+				outputSize);
+	}
+}
+
+struct EigenFacesModel
+{
+	int dimensions;
+	cv::PCA pca;
+
+	vector<Mat> projections;
+
+	vector<Mat> faces;
+	vector<int> labels;
+	vector<string> labelNames;
+};
+
+void createEigenFacesModel(EigenFacesModel &model, const Dataset &dataset, int dimensions)
+{
+	CV_Assert(dataset.images.size() > 0);
+	CV_Assert(dataset.images.size() == dataset.labels.size());
+
+	int n = dataset.images.size();
+	int k = dataset.images[0].total();
+
+	if (dimensions <= 0 || dimensions > n) {
+		dimensions = n;
+	}
+
+	Mat data{n, k, CV_32F};
+
+	for (int i = 0; i < n; i++) {
+		Mat currRow = dataset.images[i].reshape(0, 1);
+		currRow.convertTo(currRow, data.type());
+		currRow.copyTo(data.row(i));
+	}
+
+	model.pca = cv::PCA{data, cv::noArray(), cv::PCA::DATA_AS_ROW, dimensions};
+
+	{
+		Mat mean = model.pca.mean.reshape(1, dataset.images[0].rows);
+		cv::imshow("w", mean / 255);
+		cv::waitKey(0);
+
+		Mat basis = model.pca.eigenvectors.reshape(1, dataset.images[0].rows * dimensions).clone();
+		cv::normalize(basis, basis, 0, 1, cv::NORM_MINMAX, CV_32F);
+		cv::imshow("w", basis);
+		cv::waitKey(0);
+	}
+
+	for (int i = 0; i < n; i++) {
+		cv::imshow("w", data.row(i).reshape(1, dataset.images[0].rows) / 255);
+		cv::waitKey(0);
+
+		Mat projection = model.pca.project(data.row(i));
+		model.projections.push_back(projection);
+
+		cv::imshow("w", model.pca.backProject(projection).reshape(1, dataset.images[0].rows) / 255);
+		cv::waitKey(0);
+	}
+
+	// TODO(Andrey): Deep copy?
+
+	model.faces = dataset.images;
+	model.labels = dataset.labels;
+	model.labelNames = dataset.labelNames;
+
+}
+
+void predict(EigenFacesModel &model, Mat face)
+{
+	CV_Assert(face.total() == model.pca.mean.total());
+	Mat testVector = face.reshape(0, 1);
+	Mat projection = model.pca.project(testVector);
+
+	std::cout << "===========" << std::endl;
+	std::cout << projection << std::endl;
+
+	cv::imshow("w", face);
+	cv::waitKey(0);
+
+	cv::imshow("w", model.pca.backProject(projection).reshape(1, face.rows) / 255);
+	cv::waitKey(0);
+
+	for (int i = 0; i < (int)model.projections.size(); i++) {
+		float dist = cv::norm(projection, model.projections[i], cv::NORM_L2);
+		std::cout << dist << " " << model.labelNames[model.labels[i]] << std::endl;
+	}
+}
+
+void predict(EigenFacesModel &model, Dataset &testDataset)
+{
+	for (auto &image : testDataset.images) {
+		predict(model, image);
+	}
+}
+
+
 int main(int argc, char* argv[])
 {
 	CascadeClassifier faceClassifier{"../images/haarcascade_frontalface_default.xml"};
@@ -227,27 +358,18 @@ int main(int argc, char* argv[])
 		return 0;
 	}
 
-	vector<Mat> trainImages;
-	vector<int> trainLabels;
-	vector<string> labelNames;
+	Dataset train;
+	readDataset("../images/dataset_train.txt", train);
+	normalizeFaceDataset(train, faceClassifier, eyeClassifier);
 
-	readDataset("../images/dataset_train.txt", trainImages, trainLabels, labelNames);
+	EigenFacesModel model;
+	createEigenFacesModel(model, train, 10);
 
-	vector<Mat> testImages;
-	vector<int> testLabels;
-	vector<string> testLabelNames;
+	Dataset test;
+	readDataset("../images/dataset_test.txt", test);
+	normalizeFaceDataset(test, faceClassifier, eyeClassifier);
 
-	readDataset("../images/dataset_test.txt", testImages, testLabels, labelNames);
-
-	for (Mat im : trainImages) {
-		Mat face;
-		normalizeFace(im, face, faceClassifier, eyeClassifier);
-	}
-
-	// TODO(Andrey): Check if all faces could be normalized
-
-	//cv::Ptr<cv::BasicFaceRecognizer> model = cv::createEigenFaceRecognizer();
-	//model->train(images, labels);
+	predict(model, test);
 
 	return 0;
 }
