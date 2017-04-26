@@ -9,6 +9,14 @@
 
 #include <opencv2/opencv.hpp>
 
+#ifdef __linux__
+
+#include <dirent.h>
+#include <errno.h>
+
+#elif _WIN32
+#endif
+
 typedef int8_t s8;
 typedef int16_t s16;
 typedef int32_t s32;
@@ -82,92 +90,86 @@ struct Dataset
 	vector<string> labelNames;
 };
 
-inline void ltrim(std::string &s)
+int listDirectory(const char* path, vector<string> &files)
 {
-	s.erase(s.begin(), std::find_if(s.begin(), s.end(),
-				std::not1(std::ptr_fun<int, int>(std::isspace))));
+#ifdef __linux__
+	DIR *dp;
+	struct dirent *dirp;
+
+	files.resize(0);
+
+	dp = opendir(path);
+
+	if (!dp) {
+		std::cout << errno << std::endl;
+		return errno;
+	}
+
+	while ((dirp = readdir(dp))) {
+		files.push_back(dirp->d_name);
+	}
+
+	return 0;
+#elif _WIN32
+	NOT IMPLEMENTED
+#else
+	NOT IMPLEMENTED
+#endif
 }
 
-inline void rtrim(std::string &s)
+bool readDataset(const string &datasetPath, vector<Mat> &images, vector<int> &labels, vector<string> &labelNames)
 {
-	s.erase(std::find_if(s.rbegin(), s.rend(),
-				std::not1(std::ptr_fun<int, int>(std::isspace))).base(), s.end());
-}
+	vector<string> directories;
 
-inline void trim(std::string &s)
-{
-	ltrim(s);
-	rtrim(s);
-}
+	if (listDirectory(datasetPath.c_str(), directories) != 0) {
+		return false;
+	}
 
-void readDataset(const char* path, vector<Mat> &images, vector<int> &labels, vector<string> &labelNames)
-{
+	std::sort(directories.begin(), directories.end());
+
+	int currentLabel = 0;
 	images.resize(0);
 	labels.resize(0);
 	labelNames.resize(0);
 
-	int currentLabel = -1;
+	for (const string &dir : directories) {
+		if (dir == "." || dir == "..")
+			continue;
 
-	std::size_t lastSlash = string{path}.find_last_of('/');
-	if (lastSlash == std::string::npos) {
-		lastSlash = 0;
-	}
-	else {
-		lastSlash = lastSlash + 1;
-	}
-	string directoryPath{path, path + lastSlash};
+		string directoryPath = datasetPath + "/" + dir;
 
-	std::cout << directoryPath << std::endl;
+		vector<string> imageNames;
+		if (listDirectory(directoryPath.c_str(), imageNames) != 0)
+			continue;
 
-	std::ifstream f{path};
+		for (const string &imageFile : imageNames) {
+			if (imageFile == "." || imageFile == "..")
+				continue;
 
-	if (!f.is_open()) {
-		std::cout << "ERROR: Couldn't open dataset '" << path << "'" << std::endl;
-	}
-
-	std::cout << ">>> DATASET BEGIN" << std::endl;
-
-	std::string line;
-	while (std::getline(f, line))
-	{
-		trim(line);
-
-		if (line == "XXX") {
-			// EOF mark
-			break;
-		}
-		else if (line.size() > 0 && line[0] == '#') {
-			string label = line.substr(1);
-			trim(label);
-
-			labelNames.push_back(label);
-			currentLabel++;
-
-			std::cout << std::endl;
-			std::cout << "# label '" << label << "'" << std::endl;
-		}
-		else if (line.size() > 0) {
-			CV_Assert(currentLabel >= 0);
-			Mat image = cv::imread(directoryPath + line, cv::IMREAD_GRAYSCALE);
+			string filePath = directoryPath + "/" + imageFile;
+			Mat image = cv::imread(filePath);
 
 			if (!image.empty()) {
 				images.push_back(image);
 				labels.push_back(currentLabel);
 
-				std::cout << "loaded '" << line << "'" << std::endl;
+				std::cout << "loaded '" << filePath << "'" << std::endl;
 			}
 			else {
-				std::cout << "ERROR: Couldn't load image '" << line << "'" << std::endl;
+				std::cout << "ERROR: Couldn't load image '" << filePath << "'" << std::endl;
 			}
 		}
+
+		currentLabel++;
+		labelNames.push_back(dir);
 	}
 
-	std::cout << std::endl << "<<< DATASET END" << std::endl;
+	return true;
 }
 
-void readDataset(const char *path, Dataset &dataset)
+bool readDataset(const char *path, Dataset &dataset)
 {
-	readDataset(path, dataset.images, dataset.labels, dataset.labelNames);
+	return readDataset(path, dataset.images, dataset.labels, dataset.labelNames);
 }
 
 void addToDataset(Dataset &a, const Dataset &other)
@@ -186,9 +188,19 @@ void normalizeFace(
 		CascadeClassifier &eyeClassifier,
 		int outputSize = 128)
 {
-	CV_Assert(_src.type() == CV_8U);
+	CV_Assert(_src.type() == CV_8U || _src.type() == CV_8UC3);
 
-	Mat image = _src.getMat();
+	Mat image;
+
+	if (_src.type() == CV_8U) {
+		Mat image = _src.getMat();
+	}
+	else if (_src.type() == CV_8UC3) {
+		cv::cvtColor(_src.getMat(), image, cv::COLOR_BGR2GRAY);
+	}
+	else {
+		CV_Assert(0);
+	}
 
 	std::vector<Rect> faces;
 	faceClassifier.detectMultiScale(image, faces);
@@ -202,7 +214,11 @@ void normalizeFace(
 		dst.setTo(128);
 
 		Rect faceRect = faces[0];
-		Mat face = image(faceRect);
+		Rect faceRectClipped = faceRect & Rect{0, 0, image.cols, image.rows};
+
+		Mat face{faceRect.size(), CV_8U};
+		face.setTo(0);
+		image(faceRectClipped).copyTo(face(Rect{faceRectClipped.x - faceRect.x, faceRectClipped.y - faceRect.y, faceRectClipped.width, faceRectClipped.height}));
 
 		Mat faceResized;
 
@@ -215,8 +231,11 @@ void normalizeFace(
 				0,
 				maxSize > outputSize ? cv::INTER_AREA : cv::INTER_CUBIC);
 
-		// NOTE(Andery): 
+		// NOTE(Andery):
 		cv::normalize(dst, dst, 0, 255, cv::NORM_MINMAX, CV_8UC1);
+
+		dst.colRange(0, dst.cols * 2 / 10).setTo(0);
+		dst.colRange(dst.cols - dst.cols * 2 / 10, dst.cols).setTo(0);
 
 		cv::imshow("w", dst);
 		cv::waitKey(1);
@@ -301,14 +320,18 @@ void createEigenFacesModel(EigenFacesModel &model, const Dataset &dataset, int d
 	}
 
 	for (int i = 0; i < n; i++) {
-		cv::imshow("w", data.row(i).reshape(1, dataset.images[0].rows) / 255);
-		cv::waitKey(0);
+		if (false) {
+			cv::imshow("w", data.row(i).reshape(1, dataset.images[0].rows) / 255);
+			cv::waitKey(0);
+		}
 
 		Mat projection = model.pca.project(data.row(i));
 		model.projections.push_back(projection);
 
-		cv::imshow("w", model.pca.backProject(projection).reshape(1, dataset.images[0].rows) / 255);
-		cv::waitKey(0);
+		if (false) {
+			cv::imshow("w", model.pca.backProject(projection).reshape(1, dataset.images[0].rows) / 255);
+			cv::waitKey(0);
+		}
 	}
 
 	// TODO(Andrey): Deep copy?
@@ -325,25 +348,36 @@ void predict(EigenFacesModel &model, Mat face)
 	Mat testVector = face.reshape(0, 1);
 	Mat projection = model.pca.project(testVector);
 
-	std::cout << "===========" << std::endl;
-	std::cout << projection << std::endl;
-
 	cv::imshow("w", face);
 	cv::waitKey(0);
 
-	cv::imshow("w", model.pca.backProject(projection).reshape(1, face.rows) / 255);
-	cv::waitKey(0);
+	std::cout << "============================" << std::endl;
+
+	float minDist = FLT_MAX;
+	int minLabel = -1;
 
 	for (int i = 0; i < (int)model.projections.size(); i++) {
 		float dist = cv::norm(projection, model.projections[i], cv::NORM_L2);
 		std::cout << dist << " " << model.labelNames[model.labels[i]] << std::endl;
+
+		if (dist < minDist) {
+			minDist = dist;
+			minLabel = model.labels[i];
+		}
 	}
+
+	std::cout << "Closest to: " << model.labelNames[minLabel] << std::endl;
+
+	cv::imshow("w", model.pca.backProject(projection).reshape(1, face.rows) / 255);
+	cv::waitKey(0);
 }
 
 void predict(EigenFacesModel &model, Dataset &testDataset)
 {
-	for (auto &image : testDataset.images) {
-		predict(model, image);
+	for (int i = 0; i < (int)testDataset.images.size(); i++) {
+		predict(model, testDataset.images[i]);
+		std::cout << "Correct: " << testDataset.labelNames[testDataset.labels[i]] << std::endl;
+		cv::waitKey(0);
 	}
 }
 
@@ -359,14 +393,18 @@ int main(int argc, char* argv[])
 	}
 
 	Dataset train;
-	readDataset("../images/dataset_train.txt", train);
+	if (!readDataset("../images/dataset1", train)) {
+		std::cout << "ERROR: Clouldn't load dataset" << std::endl;
+	}
 	normalizeFaceDataset(train, faceClassifier, eyeClassifier);
 
 	EigenFacesModel model;
-	createEigenFacesModel(model, train, 10);
+	createEigenFacesModel(model, train, 30);
 
 	Dataset test;
-	readDataset("../images/dataset_test.txt", test);
+	if (!readDataset("../images/dataset2", test)) {
+		std::cout << "ERROR: Clouldn't load dataset" << std::endl;
+	}
 	normalizeFaceDataset(test, faceClassifier, eyeClassifier);
 
 	predict(model, test);
