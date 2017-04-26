@@ -233,6 +233,7 @@ void normalizeFace(
 
 		// NOTE(Andery):
 		cv::normalize(dst, dst, 0, 255, cv::NORM_MINMAX, CV_8UC1);
+		cv::equalizeHist(dst, dst);
 
 		dst.colRange(0, dst.cols * 2 / 10).setTo(0);
 		dst.colRange(dst.cols - dst.cols * 2 / 10, dst.cols).setTo(0);
@@ -348,17 +349,17 @@ void predict(EigenFacesModel &model, Mat face)
 	Mat testVector = face.reshape(0, 1);
 	Mat projection = model.pca.project(testVector);
 
-	cv::imshow("w", face);
-	cv::waitKey(0);
 
-	std::cout << "============================" << std::endl;
 
 	float minDist = FLT_MAX;
 	int minLabel = -1;
 
 	for (int i = 0; i < (int)model.projections.size(); i++) {
 		float dist = cv::norm(projection, model.projections[i], cv::NORM_L2);
-		std::cout << dist << " " << model.labelNames[model.labels[i]] << std::endl;
+
+		if (false) {
+			std::cout << dist << " " << model.labelNames[model.labels[i]] << std::endl;
+		}
 
 		if (dist < minDist) {
 			minDist = dist;
@@ -368,6 +369,8 @@ void predict(EigenFacesModel &model, Mat face)
 
 	std::cout << "Closest to: " << model.labelNames[minLabel] << std::endl;
 
+	cv::imshow("w", face);
+	cv::waitKey(0);
 	cv::imshow("w", model.pca.backProject(projection).reshape(1, face.rows) / 255);
 	cv::waitKey(0);
 }
@@ -375,9 +378,9 @@ void predict(EigenFacesModel &model, Mat face)
 void predict(EigenFacesModel &model, Dataset &testDataset)
 {
 	for (int i = 0; i < (int)testDataset.images.size(); i++) {
-		predict(model, testDataset.images[i]);
+		std::cout << "============================" << std::endl;
 		std::cout << "Correct: " << testDataset.labelNames[testDataset.labels[i]] << std::endl;
-		cv::waitKey(0);
+		predict(model, testDataset.images[i]);
 	}
 }
 
