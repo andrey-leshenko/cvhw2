@@ -231,7 +231,6 @@ void normalizeFace(
 				0,
 				maxSize > outputSize ? cv::INTER_AREA : cv::INTER_CUBIC);
 
-		// NOTE(Andery):
 		cv::normalize(dst, dst, 0, 255, cv::NORM_MINMAX, CV_8UC1);
 		cv::equalizeHist(dst, dst);
 
@@ -343,47 +342,336 @@ void createEigenFacesModel(EigenFacesModel &model, const Dataset &dataset, int d
 
 }
 
-void predict(EigenFacesModel &model, Mat face)
+void visualizeEigenSpaceDots(
+		const vector<Mat> &trainVectors,
+		const vector<int> &trainLabels,
+		const vector<Mat> &testVectors,
+		const vector<int> &testLabels)
 {
-	CV_Assert(face.total() == model.pca.mean.total());
-	Mat testVector = face.reshape(0, 1);
-	Mat projection = model.pca.project(testVector);
+	int xAxis = 0;
+	int yAxis = 0;
 
+	int axeCount = 0;
 
-
-	float minDist = FLT_MAX;
-	int minLabel = -1;
-
-	for (int i = 0; i < (int)model.projections.size(); i++) {
-		float dist = cv::norm(projection, model.projections[i], cv::NORM_L2);
-
-		if (false) {
-			std::cout << dist << " " << model.labelNames[model.labels[i]] << std::endl;
-		}
-
-		if (dist < minDist) {
-			minDist = dist;
-			minLabel = model.labels[i];
-		}
+	if (trainVectors.size() > 0) {
+		axeCount = trainVectors[0].total();
+	}
+	else if (testVectors.size() > 0) {
+		axeCount = testVectors[0].total();
 	}
 
-	std::cout << "Closest to: " << model.labelNames[minLabel] << std::endl;
+	float xMin = FLT_MAX;
+	float xMax = FLT_MIN;
 
-	cv::imshow("w", face);
-	cv::waitKey(0);
-	cv::imshow("w", model.pca.backProject(projection).reshape(1, face.rows) / 255);
-	cv::waitKey(0);
+	float yMin = FLT_MAX;
+	float yMax = FLT_MIN;
+
+	Mat canvas{1024, 1024, CV_8UC3};
+
+	vector<Scalar> colorPalette = {
+		{180, 119, 31},
+		{14, 127, 255},
+		{44, 160, 44},
+		{40, 39, 214},
+		{189, 103, 148},
+		{75, 86, 140},
+		{194, 119, 227},
+		{127, 127, 127},
+		{34, 189, 188},
+		{207, 190, 23},
+	};
+
+	int pressedKey = 0;
+
+	while (pressedKey != 'q') {
+		auto updateAxisMinMax = [](const vector<Mat> &vectors, int axis, float &axisMin, float &axisMax) {
+			for (const Mat &m : vectors) {
+				CV_Assert(m.type() == CV_32F);
+
+				if (axis < (int)m.total()) {
+					float val = m.at<float>(axis);
+
+					axisMin = std::min(axisMin, val);
+					axisMax = std::max(axisMax, val);
+				}
+			}
+		};
+
+		updateAxisMinMax(trainVectors, xAxis, xMin, xMax);
+		updateAxisMinMax(testVectors, xAxis, xMin, xMax);
+
+		updateAxisMinMax(trainVectors, yAxis, yMin, yMax);
+		updateAxisMinMax(testVectors, yAxis, yMin, yMax);
+
+		canvas.setTo(Scalar{52, 44, 40});
+
+		for (int i = 0; i < (int)trainVectors.size(); i++) {
+			const Mat &v = trainVectors[i];
+			int label = trainLabels[i];
+
+			Point2f p;
+
+			p.x = (v.at<float>(xAxis) - xMin) / (xMax - xMin) * canvas.cols;
+			p.y = (v.at<float>(yAxis) - yMin) / (yMax - yMin) * canvas.rows;
+
+			Scalar drawingColor = label < 0 ?
+				Scalar{0} : colorPalette[label % colorPalette.size()];
+
+			cv::circle(canvas, p, 7, drawingColor, -1);
+		}
+
+		for (int i = 0; i < (int)testVectors.size(); i++) {
+			const Mat &v = testVectors[i];
+			int label = trainLabels[i];
+
+			Point2f p;
+
+			p.x = (v.at<float>(xAxis) - xMin) / (xMax - xMin) * canvas.cols;
+			p.y = (v.at<float>(yAxis) - yMin) / (yMax - yMin) * canvas.rows;
+
+			int rectSize = 10;
+
+			Rect r{(int)(p.x - rectSize / 2), (int)(p.y - rectSize / 2), rectSize, rectSize};
+
+			Scalar drawingColor = label < 0 ?
+				Scalar{0} : colorPalette[label % colorPalette.size()];
+
+			cv::rectangle(canvas, r, drawingColor, -1);
+		}
+
+		cv::imshow("Eigenspace", canvas);
+		pressedKey = cv::waitKey(0);
+
+		switch (pressedKey) {
+			case 'j':
+				if (yAxis < axeCount - 1)
+					yAxis++;
+				else
+					std::cout << '\a';
+				break;
+			case 'k':
+				if (yAxis > 0)
+					yAxis--;
+				else
+					std::cout << '\a';
+				break;
+			case 'h':
+				if (xAxis > 0)
+					xAxis--;
+				else
+					std::cout << '\a';
+				break;
+			case 'l':
+				if (xAxis < axeCount - 1)
+					xAxis++;
+				else
+					std::cout << '\a';
+				break;
+			case 'm':
+				if (yAxis < axeCount - 1) {
+					yAxis++;
+				}
+				else if (xAxis < axeCount - 1) {
+					yAxis = 0;
+					xAxis++;
+				}
+				else {
+					std::cout << '\a';
+				}
+				break;
+			case 'n':
+				if (yAxis > 0) {
+					yAxis--;
+				}
+				else if (xAxis > 0) {
+					yAxis = axeCount - 1;
+					xAxis--;
+				}
+				else {
+					std::cout << '\a';
+				}
+				break;
+		}
+
+		std::cout << xAxis << " : " << yAxis << std::endl;
+	}
+}
+
+void visualizeEigenSpaceLines(
+		const vector<Mat> &trainVectors,
+		const vector<int> &trainLabels,
+		const vector<Mat> &testVectors,
+		const vector<int> &testLabels)
+{
+	int axeCount = 0;
+
+	if (trainVectors.size() > 0) {
+		axeCount = trainVectors[0].total();
+	}
+	else if (testVectors.size() > 0) {
+		axeCount = testVectors[0].total();
+	}
+
+	vector<float> axisMin(axeCount, FLT_MAX);
+	vector<float> axisMax(axeCount, FLT_MIN);
+
+	Mat canvas{1024 / 4, 1024, CV_8UC3};
+
+	vector<Scalar> colorPalette = {
+		{180, 119, 31},
+		{14, 127, 255},
+		{44, 160, 44},
+		{40, 39, 214},
+		{189, 103, 148},
+		{75, 86, 140},
+		{194, 119, 227},
+		{127, 127, 127},
+		{34, 189, 188},
+		{207, 190, 23},
+	};
+
+	auto updateAxisMinMax = [axeCount](const vector<Mat> &vectors, vector<float> &axisMin, vector<float> &axisMax) {
+		for (int i = 0; i < (int)vectors.size(); i++) {
+			Mat m = vectors[i];
+
+			CV_Assert(vectors[i].type() == CV_32F);
+			CV_Assert(axeCount == (int)m.total());
+
+			for (int axis = 0; axis < (int)m.total(); axis++) {
+				float val = m.at<float>(axis);
+
+				axisMin[axis] = std::min(axisMin[axis], val);
+				axisMax[axis] = std::max(axisMax[axis], val);
+			}
+		}
+	};
+
+	updateAxisMinMax(trainVectors, axisMin, axisMax);
+	updateAxisMinMax(testVectors, axisMin, axisMax);
+
+	int shownLabel = -1;
+
+	int pressedKey = 0;
+
+	while (pressedKey != 'q') {
+
+		canvas.setTo(Scalar{52, 44, 40});
+
+		for (int i = 0; i < axeCount; i++) {
+			int x = canvas.cols * i / (axeCount - 1);
+			Point2i top{x, 0};
+			Point2i bot{x, canvas.rows};
+			cv::line(canvas, top, bot, Scalar{0}, 1);
+		}
+
+		vector<Point2i> featureLine(axeCount);
+
+		for (int i = 0; i < (int)trainVectors.size(); i++) {
+			const Mat &v = trainVectors[i];
+			int label = trainLabels[i];
+
+			if (shownLabel >= 0 && shownLabel != label)
+				continue;
+
+			Scalar drawingColor = label < 0 ?
+				Scalar{0} : colorPalette[label % colorPalette.size()];
+
+			for (int axis = 0; axis < axeCount; axis++) {
+				Point2i p;
+
+				p.x = canvas.cols * (axis) / (axeCount - 1);
+				p.y = (v.at<float>(axis) - axisMin[axis]) / (axisMax[axis] - axisMin[axis]) * canvas.rows;
+
+				featureLine[axis] = p;
+			}
+
+			cv::polylines(canvas, {featureLine}, false, drawingColor, 1);
+		}
+
+		/*
+		for (int i = 0; i < (int)testVectors.size(); i++) {
+			const Mat &v = testVectors[i];
+			int label = trainLabels[i];
+
+			Point2f p;
+
+			p.x = (v.at<float>(xAxis) - xMin) / (xMax - xMin) * canvas.cols;
+			p.y = (v.at<float>(yAxis) - yMin) / (yMax - yMin) * canvas.rows;
+
+			int rectSize = 10;
+
+			Rect r{p.x - rectSize / 2, p.y - rectSize / 2, rectSize, rectSize};
+
+			Scalar drawingColor = label < 0 ?
+				Scalar{0} : colorPalette[label % colorPalette.size()];
+
+			cv::rectangle(canvas, r, drawingColor, -1);
+		}
+		*/
+
+		cv::imshow("Eigenspace", canvas);
+		pressedKey = cv::waitKey(0);
+
+		switch (pressedKey) {
+			case 'j':
+				shownLabel++;
+				break;
+			case 'k':
+				if (shownLabel > -1)
+					shownLabel--;
+				else
+					std::cout << '\a';
+				break;
+		}
+	}
 }
 
 void predict(EigenFacesModel &model, Dataset &testDataset)
 {
-	for (int i = 0; i < (int)testDataset.images.size(); i++) {
-		std::cout << "============================" << std::endl;
-		std::cout << "Correct: " << testDataset.labelNames[testDataset.labels[i]] << std::endl;
-		predict(model, testDataset.images[i]);
-	}
-}
+	vector<Mat> testProjections;
 
+	for (int i = 0; i < (int)testDataset.images.size(); i++) {
+		Mat face = testDataset.images[i];
+		CV_Assert(face.total() == model.pca.mean.total());
+
+		std::cout << "============================" << std::endl;
+
+		Mat testVector = face.reshape(0, 1);
+		Mat projection = model.pca.project(testVector);
+
+		testProjections.push_back(projection);
+
+		float minDist = FLT_MAX;
+		int minLabel = -1;
+
+		for (int i = 0; i < (int)model.projections.size(); i++) {
+			float dist = cv::norm(projection, model.projections[i], cv::NORM_L2);
+			//float dist = cv::norm(projection, model.projections[i], cv::NORM_L1);
+
+			if (false) {
+				std::cout << dist << " " << model.labelNames[model.labels[i]] << std::endl;
+			}
+
+			if (dist < minDist) {
+				minDist = dist;
+				minLabel = model.labels[i];
+			}
+		}
+
+		std::cout << "Closest to: " << model.labelNames[minLabel] << std::endl;
+		std::cout << "Correct: " << testDataset.labelNames[testDataset.labels[i]] << std::endl;
+
+		if (false) {
+			cv::imshow("w", face);
+			cv::waitKey(0);
+			cv::imshow("w", model.pca.backProject(projection).reshape(1, face.rows) / 255);
+			cv::waitKey(0);
+		}
+	}
+
+	visualizeEigenSpaceDots(model.projections, model.labels, testProjections, testDataset.labels);
+	visualizeEigenSpaceLines(model.projections, model.labels, testProjections, testDataset.labels);
+}
 
 int main(int argc, char* argv[])
 {
