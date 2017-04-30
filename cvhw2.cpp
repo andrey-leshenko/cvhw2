@@ -366,7 +366,7 @@ void visualizeEigenSpaceDots(
 	float yMin = FLT_MAX;
 	float yMax = FLT_MIN;
 
-	Mat canvas{1024, 1024, CV_8UC3};
+	Mat canvas{800, 800, CV_8UC3};
 
 	vector<Scalar> colorPalette = {
 		{180, 119, 31},
@@ -515,21 +515,6 @@ void visualizeEigenSpaceLines(
 	vector<float> axisMin(axeCount, FLT_MAX);
 	vector<float> axisMax(axeCount, FLT_MIN);
 
-	Mat canvas{1024 / 4, 1024, CV_8UC3};
-
-	vector<Scalar> colorPalette = {
-		{180, 119, 31},
-		{14, 127, 255},
-		{44, 160, 44},
-		{40, 39, 214},
-		{189, 103, 148},
-		{75, 86, 140},
-		{194, 119, 227},
-		{127, 127, 127},
-		{34, 189, 188},
-		{207, 190, 23},
-	};
-
 	auto updateAxisMinMax = [axeCount](const vector<Mat> &vectors, vector<float> &axisMin, vector<float> &axisMax) {
 		for (int i = 0; i < (int)vectors.size(); i++) {
 			Mat m = vectors[i];
@@ -549,7 +534,26 @@ void visualizeEigenSpaceLines(
 	updateAxisMinMax(trainVectors, axisMin, axisMax);
 	updateAxisMinMax(testVectors, axisMin, axisMax);
 
+	float globalMin = *std::min_element(axisMin.begin(), axisMin.end());
+	float globalMax = *std::max_element(axisMax.begin(), axisMax.end());
+
+	Mat canvas{1024 / 4, 1024, CV_8UC3};
+
+	vector<Scalar> colorPalette = {
+		{180, 119, 31},
+		{14, 127, 255},
+		{44, 160, 44},
+		{40, 39, 214},
+		{189, 103, 148},
+		{75, 86, 140},
+		{194, 119, 227},
+		{127, 127, 127},
+		{34, 189, 188},
+		{207, 190, 23},
+	};
+
 	int shownLabel = -1;
+	bool uniformScaling = false;
 
 	int pressedKey = 0;
 
@@ -579,8 +583,11 @@ void visualizeEigenSpaceLines(
 			for (int axis = 0; axis < axeCount; axis++) {
 				Point2i p;
 
+				float yMin = uniformScaling ? globalMin : axisMin[axis];
+				float yMax = uniformScaling ? globalMax : axisMax[axis];
+
 				p.x = canvas.cols * (axis) / (axeCount - 1);
-				p.y = (v.at<float>(axis) - axisMin[axis]) / (axisMax[axis] - axisMin[axis]) * canvas.rows;
+				p.y = (v.at<float>(axis) - yMin) / (yMax - yMin) * canvas.rows;
 
 				featureLine[axis] = p;
 			}
@@ -588,26 +595,30 @@ void visualizeEigenSpaceLines(
 			cv::polylines(canvas, {featureLine}, false, drawingColor, 1);
 		}
 
-		/*
 		for (int i = 0; i < (int)testVectors.size(); i++) {
 			const Mat &v = testVectors[i];
-			int label = trainLabels[i];
+			int label = testLabels[i];
 
-			Point2f p;
-
-			p.x = (v.at<float>(xAxis) - xMin) / (xMax - xMin) * canvas.cols;
-			p.y = (v.at<float>(yAxis) - yMin) / (yMax - yMin) * canvas.rows;
-
-			int rectSize = 10;
-
-			Rect r{p.x - rectSize / 2, p.y - rectSize / 2, rectSize, rectSize};
+			if (shownLabel >= 0 && shownLabel != label)
+				continue;
 
 			Scalar drawingColor = label < 0 ?
 				Scalar{0} : colorPalette[label % colorPalette.size()];
 
-			cv::rectangle(canvas, r, drawingColor, -1);
+			for (int axis = 0; axis < axeCount; axis++) {
+				Point2i p;
+
+				float yMin = uniformScaling ? globalMin : axisMin[axis];
+				float yMax = uniformScaling ? globalMax : axisMax[axis];
+
+				p.x = canvas.cols * (axis) / (axeCount - 1);
+				p.y = (v.at<float>(axis) - yMin) / (yMax - yMin) * canvas.rows;
+
+				featureLine[axis] = p;
+			}
+
+			cv::polylines(canvas, {featureLine}, false, drawingColor, 2);
 		}
-		*/
 
 		cv::imshow("Eigenspace", canvas);
 		pressedKey = cv::waitKey(0);
@@ -621,6 +632,9 @@ void visualizeEigenSpaceLines(
 					shownLabel--;
 				else
 					std::cout << '\a';
+				break;
+			case 'u':
+				uniformScaling = !uniformScaling;
 				break;
 		}
 	}
@@ -690,7 +704,7 @@ int main(int argc, char* argv[])
 	normalizeFaceDataset(train, faceClassifier, eyeClassifier);
 
 	EigenFacesModel model;
-	createEigenFacesModel(model, train, 30);
+	createEigenFacesModel(model, train, 10);
 
 	Dataset test;
 	if (!readDataset("../images/dataset2", test)) {
