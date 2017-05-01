@@ -143,10 +143,11 @@ bool readDataset(const string &datasetPath, vector<Mat> &images, vector<int> &la
 			continue;
 
 		for (const string &imageFile : imageNames) {
-			if (imageFile == "." || imageFile == "..")
+			if (imageFile.substr(0, 1) == ".")
 				continue;
 
 			string filePath = directoryPath + "/" + imageFile;
+			std::cout << filePath << std::endl;
 			Mat image = cv::imread(filePath);
 
 			if (!image.empty()) {
@@ -203,7 +204,7 @@ void normalizeFace(
 	}
 
 	std::vector<Rect> faces;
-	faceClassifier.detectMultiScale(image, faces);
+	faceClassifier.detectMultiScale(image, faces, 1.05, 12);
 
 	std::vector<Rect> eyes;
 	eyeClassifier.detectMultiScale(image, eyes);
@@ -254,7 +255,7 @@ void normalizeFace(
 		}
 
 		cv::imshow("w", display);
-		cv::waitKey(0);
+		cv::waitKey(1);
 	}
 }
 
@@ -264,14 +265,26 @@ void normalizeFaceDataset(
 		CascadeClassifier &eyeClassifier,
 		int outputSize = 128)
 {
-	for (Mat &m : dataset.images) {
+	vector<Mat> newImages;
+	vector<int> newLabels;
+
+	for (int i = 0; i < (int)dataset.images.size(); i++) {
+		Mat normalized;
 		normalizeFace(
-				m,
-				m,
+				dataset.images[i],
+				normalized,
 				faceClassifier,
 				eyeClassifier,
 				outputSize);
+
+		if (!normalized.empty()) {
+			newImages.push_back(normalized);
+			newLabels.push_back(dataset.labels[i]);
+		}
 	}
+
+	dataset.images = newImages;
+	dataset.labels = newLabels;
 }
 
 struct EigenFacesModel
@@ -306,17 +319,25 @@ void createEigenFacesModel(EigenFacesModel &model, const Dataset &dataset, int d
 		currRow.copyTo(data.row(i));
 	}
 
+	std::cout << "BEGIN PCA" << std::endl;
+
 	model.pca = cv::PCA{data, cv::noArray(), cv::PCA::DATA_AS_ROW, dimensions};
+
+	std::cout << "END PCA" << std::endl;
 
 	{
 		Mat mean = model.pca.mean.reshape(1, dataset.images[0].rows);
-		cv::imshow("w", mean / 255);
-		cv::waitKey(0);
+		if (true) {
+			cv::imshow("w", mean / 255);
+			cv::waitKey(0);
+		}
 
 		Mat basis = model.pca.eigenvectors.reshape(1, dataset.images[0].rows * dimensions).clone();
 		cv::normalize(basis, basis, 0, 1, cv::NORM_MINMAX, CV_32F);
-		cv::imshow("w", basis);
-		cv::waitKey(0);
+		if (true) {
+			cv::imshow("w", basis);
+			cv::waitKey(0);
+		}
 	}
 
 	for (int i = 0; i < n; i++) {
@@ -698,19 +719,21 @@ int main(int argc, char* argv[])
 	}
 
 	Dataset train;
-	if (!readDataset("../images/dataset1", train)) {
+	if (!readDataset("../images/faces96_small", train)) {
 		std::cout << "ERROR: Clouldn't load dataset" << std::endl;
+		return 0;
 	}
-	normalizeFaceDataset(train, faceClassifier, eyeClassifier);
-
-	EigenFacesModel model;
-	createEigenFacesModel(model, train, 10);
 
 	Dataset test;
-	if (!readDataset("../images/dataset2", test)) {
+	if (!readDataset("../images/dataset2/test", test)) {
 		std::cout << "ERROR: Clouldn't load dataset" << std::endl;
 	}
+
+	normalizeFaceDataset(train, faceClassifier, eyeClassifier);
 	normalizeFaceDataset(test, faceClassifier, eyeClassifier);
+
+	EigenFacesModel model;
+	createEigenFacesModel(model, train, 8);
 
 	predict(model, test);
 
