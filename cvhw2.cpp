@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <string>
 #include <fstream>
+#include <utility>
 
 #include <stdio.h>
 #include <stdint.h>
@@ -287,6 +288,37 @@ void normalizeFaceDataset(
 	dataset.labels = newLabels;
 }
 
+Mat asRowMatrix(cv::InputArrayOfArrays src, int rtype, double alpha=1, double beta=0) {
+    CV_Assert(src.kind() == cv::_InputArray::STD_VECTOR_MAT || src.kind() == cv::_InputArray::STD_VECTOR_VECTOR);
+
+    size_t rows = src.total();
+
+    if(rows == 0)
+        return Mat();
+
+    size_t cols = src.getMat(0).total();
+
+    Mat data((int)rows, (int)cols, rtype);
+
+    for(unsigned int i = 0; i < rows; i++) {
+		Mat currentMat = src.getMat(i);
+
+        // make sure data can be reshaped
+        if(currentMat.total() != cols) {
+            String error_message = cv::format("Wrong number of elements in matrix #%d! Expected %d was %d.", i, cols, currentMat.total());
+            CV_Error(cv::Error::StsBadArg, error_message);
+        }
+
+		// Reshape only workes with continuous matrices
+		if (!currentMat.isContinuous()) {
+			currentMat = currentMat.clone();
+		}
+
+		currentMat.reshape(1, 1).convertTo(data.row(i), rtype, alpha, beta);
+    }
+    return data;
+}
+
 struct EigenFacesModel
 {
 	int dimensions;
@@ -305,19 +337,12 @@ void createEigenFacesModel(EigenFacesModel &model, const Dataset &dataset, int d
 	CV_Assert(dataset.images.size() == dataset.labels.size());
 
 	int n = dataset.images.size();
-	int k = dataset.images[0].total();
 
 	if (dimensions <= 0 || dimensions > n) {
 		dimensions = n;
 	}
 
-	Mat data{n, k, CV_32F};
-
-	for (int i = 0; i < n; i++) {
-		Mat currRow = dataset.images[i].reshape(0, 1);
-		currRow.convertTo(currRow, data.type());
-		currRow.copyTo(data.row(i));
-	}
+	Mat data = asRowMatrix(dataset.images, CV_32F);
 
 	std::cout << "BEGIN PCA" << std::endl;
 
@@ -661,51 +686,70 @@ void visualizeEigenSpaceLines(
 	}
 }
 
-void predict(EigenFacesModel &model, Dataset &testDataset)
+void visualizePrediction(
+		EigenFacesModel model,
+		Dataset &testDataset, 
+		Mat testProjections,
+		vector<int> testPredictions)
 {
-	vector<Mat> testProjections;
+}
 
-	for (int i = 0; i < (int)testDataset.images.size(); i++) {
-		Mat face = testDataset.images[i];
-		CV_Assert(face.total() == model.pca.mean.total());
+vector<int> classifyKNN(Mat trainProj, const vector<int> &trainLabels, int labelCount, Mat testProj, int k = 1)
+{
+	vector<std::pair<float, int>> distancesAndLabels;
+	distancesAndLabels.reserve(trainProj.rows);
 
-		std::cout << "============================" << std::endl;
+	vector<int> labelVotes(labelCount);
+	vector<int> chosenLabels;
 
-		Mat testVector = face.reshape(0, 1);
-		Mat projection = model.pca.project(testVector);
+	for (int i = 0; i < testProj.rows; i++) {
+		distancesAndLabels.resize(0);
 
-		testProjections.push_back(projection);
+		for (int j = 0; j < trainProj.rows; j++) {
+			float dist = cv::norm(testProj.row(i), trainProj.row(j), cv::NORM_L2);
 
-		float minDist = FLT_MAX;
-		int minLabel = -1;
-
-		for (int i = 0; i < (int)model.projections.size(); i++) {
-			float dist = cv::norm(projection, model.projections[i], cv::NORM_L2);
-			//float dist = cv::norm(projection, model.projections[i], cv::NORM_L1);
-
-			if (false) {
-				std::cout << dist << " " << model.labelNames[model.labels[i]] << std::endl;
-			}
-
-			if (dist < minDist) {
-				minDist = dist;
-				minLabel = model.labels[i];
-			}
+			distancesAndLabels.push_back({dist, trainLabels[j]});
 		}
 
-		std::cout << "Closest to: " << model.labelNames[minLabel] << std::endl;
-		std::cout << "Correct: " << testDataset.labelNames[testDataset.labels[i]] << std::endl;
+		std::sort(distancesAndLabels.begin(), distancesAndLabels.end());
+		if ((int)distancesAndLabels.size() > k)
+			distancesAndLabels.resize(k);
 
-		if (false) {
-			cv::imshow("w", face);
-			cv::waitKey(0);
-			cv::imshow("w", model.pca.backProject(projection).reshape(1, face.rows) / 255);
-			cv::waitKey(0);
+		std::fill(labelVotes.begin(), labelVotes.end(), 0);
+
+		for (auto p : distancesAndLabels) {
+			labelVotes[p.second]++;
+		}
+
+		int mostVoted = std::max_element(labelVotes.begin(), labelVotes.end()) - labelVotes.begin();
+		chosenLabels.push_back(mostVoted);
+	}
+
+	return chosenLabels;
+}
+
+void predict(EigenFacesModel &model, Dataset &testDataset)
+{
+	//vector<Mat> testProjections;
+
+	Mat trainProjections = asRowMatrix(model.projections, CV_32F);
+	Mat testProjections = model.pca.project(asRowMatrix(testDataset.images, CV_32F));
+
+	vector<int> chosenLabels = classifyKNN(trainProjections, model.labels, model.labelNames.size(), testProjections, 1);
+
+	int correct = 0;
+
+	for (int i = 0; i < (int)chosenLabels.size(); i++) {
+		std::cout << chosenLabels[i] << " " << testDataset.labels[i] << std::endl;
+		if (model.labelNames[chosenLabels[i]] == testDataset.labelNames[testDataset.labels[i]]) {
+			correct++;
 		}
 	}
 
-	visualizeEigenSpaceDots(model.projections, model.labels, testProjections, testDataset.labels);
-	visualizeEigenSpaceLines(model.projections, model.labels, testProjections, testDataset.labels);
+	printf("%2.01f%% (%d/%d) correct\n", correct * 100.0f / chosenLabels.size(), correct, chosenLabels.size());
+
+	//visualizeEigenSpaceDots(model.projections, model.labels, testProjections, testDataset.labels);
+	//visualizeEigenSpaceLines(model.projections, model.labels, testProjections, testDataset.labels);
 }
 
 int main(int argc, char* argv[])
@@ -725,7 +769,7 @@ int main(int argc, char* argv[])
 	}
 
 	Dataset test;
-	if (!readDataset("../images/dataset2/test", test)) {
+	if (!readDataset("../images/faces96_small", test)) {
 		std::cout << "ERROR: Clouldn't load dataset" << std::endl;
 	}
 
