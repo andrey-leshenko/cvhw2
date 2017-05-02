@@ -1,5 +1,6 @@
 #include <iostream>
 #include <vector>
+#include <map>
 #include <algorithm>
 #include <string>
 #include <fstream>
@@ -30,6 +31,8 @@ typedef uint64_t u64;
 
 using std::vector;
 using std::string;
+using std::map;
+using std::pair;
 
 using cv::Mat;
 using cv::Scalar;
@@ -67,6 +70,7 @@ using cv::Point;
 using cv::Rect;
 using cv::CascadeClassifier;
 using cv::PCA;
+using cv::FileStorage;
 
 #define QQQ do {std::cerr << "QQQ " << __FUNCTION__ << " " << __LINE__ << std::endl;} while(0)
 
@@ -83,13 +87,6 @@ void printTimeSinceLastCall(const char* message)
 
 	last = curr;
 }
-
-struct Dataset
-{
-	vector<Mat> images;
-	vector<int> labels;
-	vector<string> labelNames;
-};
 
 int listDirectory(const char* path, vector<string> &files)
 {
@@ -117,6 +114,42 @@ int listDirectory(const char* path, vector<string> &files)
 	NOT IMPLEMENTED
 #endif
 }
+
+void loadFaceCache(const char *path, map<string, Rect> &faceCache)
+{
+	faceCache.clear();
+
+	FileStorage fs{path, FileStorage::READ};
+
+	if (!fs.isOpened())
+		return;
+}
+
+void saveFaceCache(const char *path, const map<string, Rect> &faceCache)
+{
+	FileStorage fs{path, FileStorage::WRITE};
+
+	if (!fs.isOpened())
+		return;
+
+	fs << "images" << "[";
+
+	for (const pair<string, Rect> &p : faceCache) {
+		fs << "{" << "path" << p.first << "face" << p.second << "}";
+	}
+
+	fs << "]";
+}
+
+struct Dataset
+{
+	vector<Mat> images;
+	vector<string> fileNames;
+
+	int labelCount;
+	vector<int> labels;
+	vector<string> labelNames;
+};
 
 bool readDataset(const string &datasetPath, vector<Mat> &images, vector<int> &labels, vector<string> &labelNames)
 {
@@ -148,7 +181,6 @@ bool readDataset(const string &datasetPath, vector<Mat> &images, vector<int> &la
 				continue;
 
 			string filePath = directoryPath + "/" + imageFile;
-			std::cout << filePath << std::endl;
 			Mat image = cv::imread(filePath);
 
 			if (!image.empty()) {
@@ -746,13 +778,13 @@ void predict(EigenFacesModel &model, Dataset &testDataset)
 		}
 	}
 
-	printf("%2.01f%% (%d/%d) correct\n", correct * 100.0f / chosenLabels.size(), correct, chosenLabels.size());
+	printf("%2.01f%% (%d/%d) correct\n", correct * 100.0f / chosenLabels.size(), correct, (int)chosenLabels.size());
 
 	//visualizeEigenSpaceDots(model.projections, model.labels, testProjections, testDataset.labels);
 	//visualizeEigenSpaceLines(model.projections, model.labels, testProjections, testDataset.labels);
 }
 
-int main(int argc, char* argv[])
+int main2(int argc, char* argv[])
 {
 	CascadeClassifier faceClassifier{"../images/haarcascade_frontalface_default.xml"};
 	CascadeClassifier eyeClassifier{"../images/haarcascade_eye.xml"};
@@ -782,4 +814,61 @@ int main(int argc, char* argv[])
 	predict(model, test);
 
 	return 0;
+}
+
+int main(int argc, char *argv[])
+{
+	bool commandlineMode = argc == 1;
+
+	std::istringstream argStream;
+
+	if (!commandlineMode) {
+		string argCommands{argv[1]};
+		std::replace(argCommands.begin(), argCommands.end(), ';', '\n');
+		argStream = std::istringstream{argCommands};
+	}
+
+	std::istream &inStream = commandlineMode ? std::cin : argStream;
+	string line;
+	const string prompt = "?> ";
+
+	while (true) {
+		if (commandlineMode) {
+			std::cout << prompt;
+		}
+
+		if (!std::getline(inStream, line)) {
+			break;
+		}
+
+		vector<string> words;
+
+		{
+			std::istringstream lineStream{line};
+			string word;
+
+			while (lineStream >> word || !lineStream.eof()) {
+				words.push_back(word);
+			}
+
+		}
+
+		if (words.size() == 0) {
+			continue;
+		}
+		else if (words[0] == "exit" || words[0] == "x") {
+			return 0;
+		}
+		else if (words[0] == "train" || words[0] == "tr") {
+		}
+		else if (words[0] == "train_more" || words[0] == "tr+") {
+		}
+		else if (words[0] == "visualize" || words[0] == "v") {
+		}
+		else if (words[0] == "test" || words[0] == "ts") {
+		}
+		else {
+			std::cout << "Unkown command '" << words[0] << "'. Skipping to next line" << std::endl;
+		}
+	}
 }
