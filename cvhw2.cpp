@@ -187,6 +187,8 @@ bool readDataset(
 		if (listDirectory(directoryPath.c_str(), imageNames) != 0)
 			continue;
 
+		std::sort(imageNames.begin(), imageNames.end());
+
 		for (const string &imageFile : imageNames) {
 			if (imageFile.substr(0, 1) == ".")
 				continue;
@@ -234,6 +236,33 @@ void clearDataset(Dataset &d)
 	d.fileNames.resize(0);
 	d.labels.resize(0);
 	d.labelNames.resize(0);
+}
+
+void keepImages(Dataset &d, int modulu2)
+{
+	vector<Mat> newImages;
+	vector<string> newFileNames;
+	vector<int> newLabels;
+
+	for (int i = modulu2; i < (int)d.images.size(); i += 2) {
+		newImages.push_back(d.images[i]);
+		newFileNames.push_back(d.fileNames[i]);
+		newLabels.push_back(d.labels[i]);
+	}
+
+	d.images = newImages;
+	d.fileNames = newFileNames;
+	d.labels = newLabels;
+}
+
+void keepEvenImages(Dataset &d)
+{
+	keepImages(d, 0);
+}
+
+void keepOddImages(Dataset &d)
+{
+	keepImages(d, 1);
 }
 
 void loadFaceCache(const string &path, map<string, Mat> &faceCache)
@@ -918,8 +947,19 @@ int main(int argc, char *argv[])
 			Dataset tmpDataset;
 
 			for (int i = 1; i < (int)words.size(); i++) {
-				if (!readDataset("../images/" + words[i], tmpDataset)) {
+				string name = words[i];
+				string path = string{name.begin(), std::find(name.begin(), name.end(), '#')};
+				string tag = string{std::find(name.begin(), name.end(), '#'), name.end()};
+
+				if (!readDataset("../images/" + path, tmpDataset)) {
 					std::cout << "ERROR: Clouldn't load dataset" << std::endl;
+				}
+
+				if (tag == "#even") {
+					keepEvenImages(tmpDataset);
+				}
+				else if (tag == "#odd") {
+					keepOddImages(tmpDataset);
 				}
 
 				addToDataset(newDataset, tmpDataset);
@@ -939,13 +979,23 @@ int main(int argc, char *argv[])
 		else if (words[0] == "visualize" || words[0] == "v") {
 		}
 		else if (words[0] == "test" || words[0] == "tst") {
-
 			Dataset newDataset;
 			Dataset tmpDataset;
 
 			for (int i = 1; i < (int)words.size(); i++) {
-				if (!readDataset("../images/" + words[i], tmpDataset)) {
+				string name = words[i];
+				string path = string{name.begin(), std::find(name.begin(), name.end(), '#')};
+				string tag = string{std::find(name.begin(), name.end(), '#'), name.end()};
+
+				if (!readDataset("../images/" + path, tmpDataset)) {
 					std::cout << "ERROR: Clouldn't load dataset" << std::endl;
+				}
+
+				if (tag == "#even") {
+					keepEvenImages(tmpDataset);
+				}
+				else if (tag == "#odd") {
+					keepOddImages(tmpDataset);
 				}
 
 				addToDataset(newDataset, tmpDataset);
