@@ -11,6 +11,14 @@
 
 #include <opencv2/opencv.hpp>
 
+#include <dlib/opencv.h>
+#include <dlib/image_processing/frontal_face_detector.h>
+#include <dlib/image_processing/render_face_detections.h>
+#include <dlib/image_processing.h>
+#include <dlib/gui_widgets.h>
+
+#include <numeric> // XXX std::iota
+
 #ifdef __linux__
 
 #include <dirent.h>
@@ -116,25 +124,25 @@ int listDirectory(const char* path, vector<string> &files)
 }
 
 Mat asRowMatrix(cv::InputArrayOfArrays src, int rtype, double alpha=1, double beta=0) {
-    CV_Assert(src.kind() == cv::_InputArray::STD_VECTOR_MAT || src.kind() == cv::_InputArray::STD_VECTOR_VECTOR);
+	CV_Assert(src.kind() == cv::_InputArray::STD_VECTOR_MAT || src.kind() == cv::_InputArray::STD_VECTOR_VECTOR);
 
-    size_t rows = src.total();
+	size_t rows = src.total();
 
-    if(rows == 0)
-        return Mat();
+	if(rows == 0)
+		return Mat();
 
-    size_t cols = src.getMat(0).total();
+	size_t cols = src.getMat(0).total();
 
-    Mat data((int)rows, (int)cols, rtype);
+	Mat data((int)rows, (int)cols, rtype);
 
-    for(unsigned int i = 0; i < rows; i++) {
+	for(unsigned int i = 0; i < rows; i++) {
 		Mat currentMat = src.getMat(i);
 
-        // make sure data can be reshaped
-        if(currentMat.total() != cols) {
-            String error_message = cv::format("Wrong number of elements in matrix #%d! Expected %d was %d.", i, cols, currentMat.total());
-            CV_Error(cv::Error::StsBadArg, error_message);
-        }
+		// make sure data can be reshaped
+		if(currentMat.total() != cols) {
+			String error_message = cv::format("Wrong number of elements in matrix #%d! Expected %d was %d.", i, cols, currentMat.total());
+			CV_Error(cv::Error::StsBadArg, error_message);
+		}
 
 		// Reshape only workes with continuous matrices
 		if (!currentMat.isContinuous()) {
@@ -142,8 +150,8 @@ Mat asRowMatrix(cv::InputArrayOfArrays src, int rtype, double alpha=1, double be
 		}
 
 		currentMat.reshape(1, 1).convertTo(data.row(i), rtype, alpha, beta);
-    }
-    return data;
+	}
+	return data;
 }
 
 struct Dataset
@@ -444,6 +452,195 @@ void normalizeFaceDataset(
 	dataset.images = newImages;
 	dataset.labels = newLabels;
 }
+
+/////////////////////////////////////////////
+
+enum faceRegionEnum {
+	leftEye,
+	rightEye,
+	mouth
+};
+
+vector<Point2f> pushActualPointsFromRegion(vector<Point2f> points, vector<int> toChoose)
+{
+	vector<Point2f> chosenPoints;
+
+	for(int num : toChoose)
+	{
+		chosenPoints.push_back(points[num]);
+	}
+
+	return chosenPoints;
+}
+
+Point2f centroidOfRegion(vector<Point2f> facialLandmark, faceRegionEnum faceRegion )
+{
+	int regionSize;
+	int regionStartPoint;
+
+	switch(faceRegion) {
+		case faceRegionEnum::leftEye:   regionSize = 6;
+										regionStartPoint = 36;
+										break;
+		case faceRegionEnum::rightEye:  regionSize = 6;
+										regionStartPoint = 42;
+										break;
+		case faceRegionEnum::mouth:	  regionSize = 19;
+										regionStartPoint = 48;
+										break;
+		default: // The chin area
+										regionSize = 17;
+										regionStartPoint = 0;
+	}
+
+	vector<int> regionPoints(regionSize);
+	std::iota(regionPoints.begin(), regionPoints.end(), regionStartPoint);
+
+	vector<Point2f> actualPoints = pushActualPointsFromRegion(facialLandmark, regionPoints);
+
+	Point2f sum  = std::accumulate(actualPoints.begin(), actualPoints.end(), Point2f(0.0f, 0.0f) );
+
+	return Point2f(sum.x / regionSize, sum.y / regionSize);
+}
+
+vector<Point2f> convertDlibShapeToOpenCV(dlib::full_object_detection objectDet, Rect& outputRect)
+{
+	vector<Point2f> cvParts;
+	dlib::rectangle dlibRect = objectDet.get_rect();
+
+	for(int i = 0; i < 68; i++)
+	{
+		dlib::point p = objectDet.part(i);
+		Point2f cvPoint{ (float)p.x(), (float)p.y() };
+		cvParts.push_back(cvPoint);
+	}
+
+	outputRect = Rect(dlibRect.left(), dlibRect.top(), dlibRect.width(), dlibRect.height());
+
+	return cvParts;
+}
+
+vector<Mat> alignImageFaces(Mat image, dlib::frontal_face_detector detector, dlib::shape_predictor pose_model)
+{
+	using namespace std;
+	try
+	{
+		cv::Mat temp = image.clone();
+		// Turn OpenCV's Mat into something dlib can deal with.  Note that this just
+		// wraps the Mat object, it doesn't copy anything.  So cimg is only valid as
+		// long as temp is valid.  Also don't do anything to temp that would cause it
+		// to reallocate the memory which stores the image as that will make cimg
+		// contain dangling pointers.  This basically means you shouldn't modify temp
+		// while using cimg.
+
+		dlib::cv_image<dlib::bgr_pixel> cimg(temp);
+
+		// Detect faces
+		vector<dlib::rectangle> faces = detector(cimg);
+
+		// Find the pose of each face.
+		vector<dlib::full_object_detection> shapes;
+		for (unsigned long i = 0; i < faces.size(); ++i)
+			shapes.push_back(pose_model(cimg, faces[i]));
+
+		// Convert the faces detected by dlib to something OpenCV can deal with.
+		vector<vector<Point2f>> facialLandmarks(shapes.size());
+
+		for(int i = 0; i < shapes.size(); i++)
+		{
+			Rect dummyRect;
+			facialLandmarks[i] = convertDlibShapeToOpenCV(shapes[i], dummyRect);
+		}
+
+		// The locations of the facial landmarks visually presented:
+		// https://github.com/cmusatyalab/openface/blob/master/images/dlib-landmark-mean.png
+
+		vector<Mat> alignedFaces;
+
+		if(facialLandmarks.size() > 0)
+		{
+			// for(int i = 0; i < facialLandmarks[0].size(); i++)
+			// {
+			//	 circle(myImage, facialLandmarks[0][i], 3, Scalar(0, 0, 255));
+			//	 string objectTitle = std::to_string(i);
+			//	 cv::putText(myImage, objectTitle, facialLandmarks[0][i], cv::FONT_HERSHEY_SIMPLEX, 0.3, Scalar(0, 255, 0), 0.5);
+			// }
+
+			for(vector<Point2f> face : facialLandmarks)
+			{
+				// circle(myImage, centroidOfRegion(face, faceRegionEnum::leftEye), 3, Scalar(0, 255, 0));
+				// circle(myImage, centroidOfRegion(face, faceRegionEnum::rightEye), 3, Scalar(0, 255, 0));
+				// circle(myImage, centroidOfRegion(face, faceRegionEnum::mouth), 3, Scalar(0, 255, 0));
+
+				vector<Point2f> dstPoints = {Point2f(50, 60), Point2f(75, 120), Point2f(100, 60)};
+				vector<Point2f> srcPoints = {centroidOfRegion(face, faceRegionEnum::leftEye)
+												, centroidOfRegion(face, faceRegionEnum::mouth)
+												, centroidOfRegion(face, faceRegionEnum::rightEye)};
+
+				Mat affineTransformation = getAffineTransform(srcPoints, dstPoints);
+
+				// cout << affineTrans << endl;
+				Mat transformedFace;
+				warpAffine(image, transformedFace, affineTransformation, Size(150, 175));
+
+				alignedFaces.push_back(transformedFace);
+			}
+
+			return alignedFaces;
+		}
+		else
+		{
+			cerr << "No faces Detected! returning empty array" << endl;
+			return vector<Mat>();
+		}
+	}
+	catch(dlib::serialization_error& e)
+	{
+		cout << "You need dlib's default face landmarking model file to run this example." << endl;
+		cout << "You can get it from the following URL: " << endl;
+		cout << "   http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2" << endl;
+		cout << endl << e.what() << endl;
+	}
+	catch(std::exception& e)
+	{
+		cout << e.what() << endl;
+	}
+
+	return vector<Mat>();
+}
+
+void normalizeFaceDatasetDlib(
+		Dataset &dataset,
+		dlib::frontal_face_detector detector,
+		dlib::shape_predictor pose_model)
+{
+	vector<Mat> newImages;
+	vector<int> newLabels;
+
+	for (int i = 0; i < (int)dataset.images.size(); i++) {
+		vector<Mat> faces = alignImageFaces(dataset.images[i], detector, pose_model);
+
+		if (faces.size() == 1) {
+			Mat dst = faces[0];
+			cv::cvtColor(dst, dst, cv::COLOR_BGR2GRAY);
+			cv::normalize(dst, dst, 0, 255, cv::NORM_MINMAX, CV_8UC1);
+			cv::equalizeHist(dst, dst);
+			dst.colRange(0, dst.cols * 2 / 10).setTo(0);
+			dst.colRange(dst.cols - dst.cols * 2 / 10, dst.cols).setTo(0);
+			cv::imshow("w", dst);
+
+			cv::waitKey(1);
+			newImages.push_back(dst);
+			newLabels.push_back(dataset.labels[i]);
+		}
+	}
+
+	dataset.images = newImages;
+	dataset.labels = newLabels;
+}
+
+
+/////////////////////////////////////////////
 
 struct EigenFacesModel
 {
@@ -812,7 +1009,7 @@ void visualizeEigenSpaceLines(
 
 void visualizePrediction(
 		EigenFacesModel model,
-		Dataset &testDataset, 
+		Dataset &testDataset,
 		Mat testProjections,
 		vector<int> testPredictions)
 {
@@ -863,7 +1060,7 @@ void predict(EigenFacesModel &model, Dataset &testDataset)
 		testProjectionsList.push_back(testProjections.row(i).clone());
 	}
 
-	vector<int> chosenLabels = classifyKNN(trainProjections, model.labels, model.labelNames.size(), testProjections, 1);
+	vector<int> chosenLabels = classifyKNN(trainProjections, model.labels, model.labelNames.size(), testProjections, 5);
 
 	int correct = 0;
 
@@ -905,6 +1102,10 @@ int main(int argc, char *argv[])
 		return 0;
 	}
 
+	dlib::frontal_face_detector detector = dlib::get_frontal_face_detector();
+	dlib::shape_predictor pose_model;
+	dlib::deserialize("../shape_predictor_68_face_landmarks.dat") >> pose_model;
+
 	map<string, Mat> faceCache;
 
 	Dataset train;
@@ -913,6 +1114,8 @@ int main(int argc, char *argv[])
 	EigenFacesModel model;
 
 	loadFaceCache("face_cache", faceCache);
+
+	bool useDlib = true;
 
 	while (true) {
 		cv::destroyAllWindows();
@@ -965,13 +1168,16 @@ int main(int argc, char *argv[])
 				addToDataset(newDataset, tmpDataset);
 			}
 
-			normalizeFaceDataset(newDataset, faceClassifier, eyeClassifier, faceCache);
+			if (!useDlib)
+				normalizeFaceDataset(newDataset, faceClassifier, eyeClassifier, faceCache);
+			else
+				normalizeFaceDatasetDlib(newDataset, detector, pose_model);
 			saveFaceCache("face_cache", faceCache);
 			clearDataset(train);
 			addToDataset(train, newDataset);
 
 			if (train.images.size() > 0) {
-				createEigenFacesModel(model, train, 8);
+				createEigenFacesModel(model, train, 16);
 			}
 		}
 		else if (words[0] == "train+" || words[0] == "tr+") {
@@ -1001,7 +1207,10 @@ int main(int argc, char *argv[])
 				addToDataset(newDataset, tmpDataset);
 			}
 
-			normalizeFaceDataset(newDataset, faceClassifier, eyeClassifier, faceCache);
+			if (!useDlib)
+				normalizeFaceDataset(newDataset, faceClassifier, eyeClassifier, faceCache);
+			else
+				normalizeFaceDatasetDlib(newDataset, detector, pose_model);
 			saveFaceCache("face_cache", faceCache);
 			clearDataset(test);
 			addToDataset(test, newDataset);
