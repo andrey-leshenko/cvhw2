@@ -2,6 +2,7 @@
 #include <vector>
 #include <map>
 #include <algorithm>
+#include <numeric>
 #include <string>
 #include <fstream>
 #include <utility>
@@ -16,8 +17,6 @@
 #include <dlib/image_processing/render_face_detections.h>
 #include <dlib/image_processing.h>
 #include <dlib/gui_widgets.h>
-
-#include <numeric> // XXX std::iota
 
 #ifdef __linux__
 
@@ -453,86 +452,34 @@ void normalizeFaceDataset(
 	dataset.labels = newLabels;
 }
 
-/////////////////////////////////////////////
-
-enum faceRegionEnum {
-	leftEye,
-	rightEye,
-	mouth
-};
-
-vector<Point2f> pushActualPointsFromRegion(vector<Point2f> points, vector<int> toChoose)
-{
-	vector<Point2f> chosenPoints;
-
-	for(int num : toChoose)
-	{
-		chosenPoints.push_back(points[num]);
-	}
-
-	return chosenPoints;
-}
-
-Point2f centroidOfRegion(vector<Point2f> facialLandmark, faceRegionEnum faceRegion )
-{
-	int regionSize;
-	int regionStartPoint;
-
-	switch(faceRegion) {
-		case faceRegionEnum::leftEye:   regionSize = 6;
-										regionStartPoint = 36;
-										break;
-		case faceRegionEnum::rightEye:  regionSize = 6;
-										regionStartPoint = 42;
-										break;
-		case faceRegionEnum::mouth:	  regionSize = 19;
-										regionStartPoint = 48;
-										break;
-		default: // The chin area
-										regionSize = 17;
-										regionStartPoint = 0;
-	}
-
-	vector<int> regionPoints(regionSize);
-	std::iota(regionPoints.begin(), regionPoints.end(), regionStartPoint);
-
-	vector<Point2f> actualPoints = pushActualPointsFromRegion(facialLandmark, regionPoints);
-
-	Point2f sum  = std::accumulate(actualPoints.begin(), actualPoints.end(), Point2f(0.0f, 0.0f) );
-
-	return Point2f(sum.x / regionSize, sum.y / regionSize);
-}
-
 vector<Point2f> convertDlibShapeToOpenCV(dlib::full_object_detection objectDet, Rect& outputRect)
 {
-	vector<Point2f> cvParts;
 	dlib::rectangle dlibRect = objectDet.get_rect();
-
-	for(int i = 0; i < 68; i++)
-	{
-		dlib::point p = objectDet.part(i);
-		Point2f cvPoint{ (float)p.x(), (float)p.y() };
-		cvParts.push_back(cvPoint);
-	}
-
 	outputRect = Rect(dlibRect.left(), dlibRect.top(), dlibRect.width(), dlibRect.height());
 
-	return cvParts;
+	vector<Point2f> parts;
+
+	for(unsigned long i = 0; i < objectDet.num_parts(); i++)
+	{
+		dlib::point p = objectDet.part(i);
+		Point2f cvPoint{(float)p.x(), (float)p.y()};
+		parts.push_back(cvPoint);
+	}
+
+	return parts;
 }
 
 vector<Mat> alignImageFaces(Mat image, dlib::frontal_face_detector detector, dlib::shape_predictor pose_model)
 {
-	using namespace std;
 	try
 	{
-		cv::Mat temp = image.clone();
-		// Turn OpenCV's Mat into something dlib can deal with.  Note that this just
-		// wraps the Mat object, it doesn't copy anything.  So cimg is only valid as
-		// long as temp is valid.  Also don't do anything to temp that would cause it
+		// Turn OpenCV's Mat into something dlib can deal with. Note that this just
+		// wraps the Mat object, it doesn't copy anything. So cimg is only valid as
+		// long as temp is valid. Also don't do anything to temp that would cause it
 		// to reallocate the memory which stores the image as that will make cimg
-		// contain dangling pointers.  This basically means you shouldn't modify temp
+		// contain dangling pointers. This basically means you shouldn't modify temp
 		// while using cimg.
-
+		cv::Mat temp = image.clone();
 		dlib::cv_image<dlib::bgr_pixel> cimg(temp);
 
 		// Detect faces
@@ -540,70 +487,71 @@ vector<Mat> alignImageFaces(Mat image, dlib::frontal_face_detector detector, dli
 
 		// Find the pose of each face.
 		vector<dlib::full_object_detection> shapes;
-		for (unsigned long i = 0; i < faces.size(); ++i)
+		for (unsigned long i = 0; i < faces.size(); i++)
 			shapes.push_back(pose_model(cimg, faces[i]));
 
 		// Convert the faces detected by dlib to something OpenCV can deal with.
 		vector<vector<Point2f>> facialLandmarks(shapes.size());
 
-		for(int i = 0; i < shapes.size(); i++)
+		for(unsigned long i = 0; i < shapes.size(); i++)
 		{
-			Rect dummyRect;
-			facialLandmarks[i] = convertDlibShapeToOpenCV(shapes[i], dummyRect);
+			Rect faceRect;
+			facialLandmarks[i] = convertDlibShapeToOpenCV(shapes[i], faceRect);
 		}
 
-		// The locations of the facial landmarks visually presented:
-		// https://github.com/cmusatyalab/openface/blob/master/images/dlib-landmark-mean.png
+		// for(int i = 0; i < facialLandmarks[0].size(); i++)
+		// {
+		//	 circle(myImage, facialLandmarks[0][i], 3, Scalar(0, 0, 255));
+		//	 string objectTitle = std::to_string(i);
+		//	 cv::putText(myImage, objectTitle, facialLandmarks[0][i], cv::FONT_HERSHEY_SIMPLEX, 0.3, Scalar(0, 255, 0), 0.5);
+		// }
 
 		vector<Mat> alignedFaces;
+		alignedFaces.reserve(facialLandmarks.size());
 
-		if(facialLandmarks.size() > 0)
+		for(const vector<Point2f> &face : facialLandmarks)
 		{
-			// for(int i = 0; i < facialLandmarks[0].size(); i++)
-			// {
-			//	 circle(myImage, facialLandmarks[0][i], 3, Scalar(0, 0, 255));
-			//	 string objectTitle = std::to_string(i);
-			//	 cv::putText(myImage, objectTitle, facialLandmarks[0][i], cv::FONT_HERSHEY_SIMPLEX, 0.3, Scalar(0, 255, 0), 0.5);
-			// }
+			auto centroid = [](const vector<Point2f> &points, int begin, int end) {
+				Point2f sum = std::accumulate(
+						points.begin() + begin,
+						points.begin() + end,
+						Point2f{0.0f, 0.0f});
 
-			for(vector<Point2f> face : facialLandmarks)
-			{
-				// circle(myImage, centroidOfRegion(face, faceRegionEnum::leftEye), 3, Scalar(0, 255, 0));
-				// circle(myImage, centroidOfRegion(face, faceRegionEnum::rightEye), 3, Scalar(0, 255, 0));
-				// circle(myImage, centroidOfRegion(face, faceRegionEnum::mouth), 3, Scalar(0, 255, 0));
+				return sum / (end - begin);
+			};
 
-				vector<Point2f> dstPoints = {Point2f(50, 60), Point2f(75, 120), Point2f(100, 60)};
-				vector<Point2f> srcPoints = {centroidOfRegion(face, faceRegionEnum::leftEye)
-												, centroidOfRegion(face, faceRegionEnum::mouth)
-												, centroidOfRegion(face, faceRegionEnum::rightEye)};
+			// The locations of the facial landmarks visually presented:
+			// https://github.com/cmusatyalab/openface/blob/master/images/dlib-landmark-mean.png
 
-				Mat affineTransformation = getAffineTransform(srcPoints, dstPoints);
+			Point2f leftEye = centroid(face, 36, 42);
+			Point2f rightEye = centroid(face, 42, 48);
+			Point2f mouth = centroid(face, 48, 68);
 
-				// cout << affineTrans << endl;
-				Mat transformedFace;
-				warpAffine(image, transformedFace, affineTransformation, Size(150, 175));
+			vector<Point2f> srcPoints = {leftEye, mouth, rightEye};
+			vector<Point2f> dstPoints = {Point2f(50, 60), Point2f(75, 120), Point2f(100, 60)};
+			Mat affineTransform = cv::getAffineTransform(srcPoints, dstPoints);
 
-				alignedFaces.push_back(transformedFace);
-			}
+			Mat transformedFace;
+			cv::warpAffine(image, transformedFace, affineTransform, Size(150, 175));
 
-			return alignedFaces;
+			alignedFaces.push_back(transformedFace);
 		}
-		else
-		{
-			cerr << "No faces Detected! returning empty array" << endl;
-			return vector<Mat>();
-		}
+
+		if (alignedFaces.size() == 0)
+			std::cerr << "No faces Detected! returning empty array" << std::endl;
+
+		return alignedFaces;
 	}
 	catch(dlib::serialization_error& e)
 	{
-		cout << "You need dlib's default face landmarking model file to run this example." << endl;
-		cout << "You can get it from the following URL: " << endl;
-		cout << "   http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2" << endl;
-		cout << endl << e.what() << endl;
+		std::cout << "You need dlib's default face landmarking model file to run this example." << std::endl
+			<< "You can get it from the following URL: " << std::endl
+			<< "    http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2" << std::endl
+			<< std::endl << e.what() << std::endl;
 	}
 	catch(std::exception& e)
 	{
-		cout << e.what() << endl;
+		std::cout << e.what() << std::endl;
 	}
 
 	return vector<Mat>();
@@ -638,9 +586,6 @@ void normalizeFaceDatasetDlib(
 	dataset.images = newImages;
 	dataset.labels = newLabels;
 }
-
-
-/////////////////////////////////////////////
 
 struct EigenFacesModel
 {
