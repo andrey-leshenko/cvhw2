@@ -1023,9 +1023,130 @@ void predict(EigenFacesModel &model, Dataset &testDataset)
 	visualizeEigenSpaceDots(model.projections, model.labels, testProjectionsList, testDataset.labels);
 }
 
+struct FaceRecSystem
+{
+	CascadeClassifier faceClassifier;
+	CascadeClassifier eyeClassifier;
+
+	dlib::frontal_face_detector detector;
+	dlib::shape_predictor pose_model;
+
+	map<string, Mat> faceCache;
+
+	Dataset trainDS;
+	Dataset testDS;
+
+	EigenFacesModel model;
+
+	bool useDlib = true;
+
+	FaceRecSystem()
+	{
+		faceClassifier = CascadeClassifier{"../images/haarcascade_frontalface_default.xml"};
+		eyeClassifier = CascadeClassifier{"../images/haarcascade_eye.xml"};
+
+		if (faceClassifier.empty() || eyeClassifier.empty()) {
+			std::cout << "ERROR: Couldn't load classifier" << std::endl;
+			std::exit(-1);
+		}
+
+		detector = dlib::get_frontal_face_detector();
+		dlib::deserialize("../shape_predictor_68_face_landmarks.dat") >> pose_model;
+		loadFaceCache("face_cache", faceCache);
+	}
+
+	void train(const vector<string> &files)
+	{
+		Dataset newDataset;
+		Dataset tmpDataset;
+
+		for (int i = 0; i < (int)files.size(); i++) {
+			string name = files[i];
+			string path = string{name.begin(), std::find(name.begin(), name.end(), '#')};
+			string tag = string{std::find(name.begin(), name.end(), '#'), name.end()};
+
+			if (!readDataset("../images/" + path, tmpDataset)) {
+				std::cout << "ERROR: Clouldn't load dataset" << std::endl;
+			}
+
+			if (tag == "#even") {
+				keepEvenImages(tmpDataset);
+			}
+			else if (tag == "#odd") {
+				keepOddImages(tmpDataset);
+			}
+
+			addToDataset(newDataset, tmpDataset);
+		}
+
+		if (!useDlib)
+			normalizeFaceDataset(newDataset, faceClassifier, eyeClassifier, faceCache);
+		else
+			normalizeFaceDatasetDlib(newDataset, detector, pose_model);
+		saveFaceCache("face_cache", faceCache);
+
+		clearDataset(trainDS);
+		addToDataset(trainDS, newDataset);
+
+		if (trainDS.images.size() > 0) {
+			createEigenFacesModel(model, trainDS, 16);
+		}
+	}
+
+	void trainMore(const vector<string> &files)
+	{
+		std::cout << "Coming soon :)" << std::endl;
+	}
+
+	void visualize(const vector<string> &files)
+	{
+		std::cout << "Coming soon :)" << std::endl;
+	}
+
+	void test(const vector<string> &files)
+	{
+		Dataset newDataset;
+		Dataset tmpDataset;
+
+		for (int i = 0; i < (int)files.size(); i++) {
+			string name = files[i];
+			string path = string{name.begin(), std::find(name.begin(), name.end(), '#')};
+			string tag = string{std::find(name.begin(), name.end(), '#'), name.end()};
+
+			if (!readDataset("../images/" + path, tmpDataset)) {
+				std::cout << "ERROR: Clouldn't load dataset" << std::endl;
+			}
+
+			if (tag == "#even") {
+				keepEvenImages(tmpDataset);
+			}
+			else if (tag == "#odd") {
+				keepOddImages(tmpDataset);
+			}
+
+			addToDataset(newDataset, tmpDataset);
+		}
+
+		if (!useDlib)
+			normalizeFaceDataset(newDataset, faceClassifier, eyeClassifier, faceCache);
+		else
+			normalizeFaceDatasetDlib(newDataset, detector, pose_model);
+		saveFaceCache("face_cache", faceCache);
+
+		clearDataset(testDS);
+		addToDataset(testDS, newDataset);
+
+		if (trainDS.images.size() > 0 && testDS.images.size() > 0) {
+			predict(model, testDS);
+		}
+	}
+};
+
 int main(int argc, char *argv[])
 {
-	bool commandlineMode = argc == 1;
+	FaceRecSystem facerec;
+
+	bool commandlineMode = (argc == 1);
 
 	std::istringstream argStream;
 
@@ -1037,36 +1158,10 @@ int main(int argc, char *argv[])
 
 	std::istream &inStream = commandlineMode ? std::cin : argStream;
 	string line;
-	const string prompt = "?> ";
-
-	CascadeClassifier faceClassifier{"../images/haarcascade_frontalface_default.xml"};
-	CascadeClassifier eyeClassifier{"../images/haarcascade_eye.xml"};
-
-	if (faceClassifier.empty() || eyeClassifier.empty()) {
-		std::cout << "ERROR: Couldn't load classifier" << std::endl;
-		return 0;
-	}
-
-	dlib::frontal_face_detector detector = dlib::get_frontal_face_detector();
-	dlib::shape_predictor pose_model;
-	dlib::deserialize("../shape_predictor_68_face_landmarks.dat") >> pose_model;
-
-	map<string, Mat> faceCache;
-
-	Dataset train;
-	Dataset test;
-
-	EigenFacesModel model;
-
-	loadFaceCache("face_cache", faceCache);
-
-	bool useDlib = true;
 
 	while (true) {
-		cv::destroyAllWindows();
-
 		if (commandlineMode) {
-			std::cout << prompt;
+			std::cout << "?> ";
 		}
 
 		if (!std::getline(inStream, line)) {
@@ -1091,78 +1186,16 @@ int main(int argc, char *argv[])
 			return 0;
 		}
 		else if (words[0] == "train" || words[0] == "tr") {
-			Dataset newDataset;
-			Dataset tmpDataset;
-
-			for (int i = 1; i < (int)words.size(); i++) {
-				string name = words[i];
-				string path = string{name.begin(), std::find(name.begin(), name.end(), '#')};
-				string tag = string{std::find(name.begin(), name.end(), '#'), name.end()};
-
-				if (!readDataset("../images/" + path, tmpDataset)) {
-					std::cout << "ERROR: Clouldn't load dataset" << std::endl;
-				}
-
-				if (tag == "#even") {
-					keepEvenImages(tmpDataset);
-				}
-				else if (tag == "#odd") {
-					keepOddImages(tmpDataset);
-				}
-
-				addToDataset(newDataset, tmpDataset);
-			}
-
-			if (!useDlib)
-				normalizeFaceDataset(newDataset, faceClassifier, eyeClassifier, faceCache);
-			else
-				normalizeFaceDatasetDlib(newDataset, detector, pose_model);
-			saveFaceCache("face_cache", faceCache);
-			clearDataset(train);
-			addToDataset(train, newDataset);
-
-			if (train.images.size() > 0) {
-				createEigenFacesModel(model, train, 16);
-			}
+			facerec.train(vector<string>{words.begin() + 1, words.end()});
 		}
 		else if (words[0] == "train+" || words[0] == "tr+") {
+			facerec.trainMore(vector<string>{words.begin() + 1, words.end()});
 		}
 		else if (words[0] == "visualize" || words[0] == "v") {
+			facerec.visualize(vector<string>{words.begin() + 1, words.end()});
 		}
 		else if (words[0] == "test" || words[0] == "tst") {
-			Dataset newDataset;
-			Dataset tmpDataset;
-
-			for (int i = 1; i < (int)words.size(); i++) {
-				string name = words[i];
-				string path = string{name.begin(), std::find(name.begin(), name.end(), '#')};
-				string tag = string{std::find(name.begin(), name.end(), '#'), name.end()};
-
-				if (!readDataset("../images/" + path, tmpDataset)) {
-					std::cout << "ERROR: Clouldn't load dataset" << std::endl;
-				}
-
-				if (tag == "#even") {
-					keepEvenImages(tmpDataset);
-				}
-				else if (tag == "#odd") {
-					keepOddImages(tmpDataset);
-				}
-
-				addToDataset(newDataset, tmpDataset);
-			}
-
-			if (!useDlib)
-				normalizeFaceDataset(newDataset, faceClassifier, eyeClassifier, faceCache);
-			else
-				normalizeFaceDatasetDlib(newDataset, detector, pose_model);
-			saveFaceCache("face_cache", faceCache);
-			clearDataset(test);
-			addToDataset(test, newDataset);
-
-			if (train.images.size() > 0 && test.images.size() > 0) {
-				predict(model, test);
-			}
+			facerec.test(vector<string>{words.begin() + 1, words.end()});
 		}
 		else {
 			std::cout << "Unkown command '" << words[0] << "'. Skipping to next line." << std::endl;
