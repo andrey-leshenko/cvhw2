@@ -155,187 +155,6 @@ Mat asRowMatrix(cv::InputArrayOfArrays src, int rtype, double alpha=1, double be
 	return data;
 }
 
-struct Dataset
-{
-	vector<Mat> images;
-	vector<string> fileNames;
-
-	//int labelCount;
-	vector<int> labels;
-	vector<string> labelNames;
-};
-
-bool readDataset(
-		const string &datasetPath,
-		vector<Mat> &images,
-		vector<string> &fileNames,
-		vector<int> &labels,
-		vector<string> &labelNames)
-{
-	vector<string> directories;
-
-	if (listDirectory(datasetPath.c_str(), directories) != 0) {
-		return false;
-	}
-
-	std::sort(directories.begin(), directories.end());
-
-	int currentLabel = 0;
-	images.resize(0);
-	fileNames.resize(0);
-	labels.resize(0);
-	labelNames.resize(0);
-
-	for (const string &dir : directories) {
-		if (dir == "." || dir == "..")
-			continue;
-
-		string directoryPath = datasetPath + "/" + dir;
-
-		vector<string> imageNames;
-		if (listDirectory(directoryPath.c_str(), imageNames) != 0)
-			continue;
-
-		std::sort(imageNames.begin(), imageNames.end());
-
-		for (const string &imageFile : imageNames) {
-			if (imageFile.substr(0, 1) == ".")
-				continue;
-
-			string filePath = directoryPath + "/" + imageFile;
-			Mat image = cv::imread(filePath);
-
-			if (!image.empty()) {
-				images.push_back(image);
-				labels.push_back(currentLabel);
-				fileNames.push_back(filePath);
-
-				std::cout << "loaded '" << filePath << "'" << std::endl;
-			}
-			else {
-				std::cout << "ERROR: Couldn't load image '" << filePath << "'" << std::endl;
-			}
-		}
-
-		currentLabel++;
-		labelNames.push_back(dir);
-	}
-
-	return true;
-}
-
-bool readDataset(const string &path, Dataset &dataset)
-{
-	return readDataset(path, dataset.images, dataset.fileNames, dataset.labels, dataset.labelNames);
-}
-
-void addToDataset(Dataset &a, const Dataset &other)
-{
-	for (Mat m : other.images) {
-		a.images.push_back(m.clone());
-	}
-	a.labels.insert(a.labels.begin(), other.labels.begin(), other.labels.end());
-	a.fileNames.insert(a.fileNames.begin(), other.fileNames.begin(), other.fileNames.end());
-	a.labelNames.insert(a.labelNames.begin(), other.labelNames.begin(), other.labelNames.end());
-}
-
-void clearDataset(Dataset &d)
-{
-	d.images.resize(0);
-	d.fileNames.resize(0);
-	d.labels.resize(0);
-	d.labelNames.resize(0);
-}
-
-void keepImages(Dataset &d, int modulu2)
-{
-	vector<Mat> newImages;
-	vector<string> newFileNames;
-	vector<int> newLabels;
-
-	for (int i = modulu2; i < (int)d.images.size(); i += 2) {
-		newImages.push_back(d.images[i]);
-		newFileNames.push_back(d.fileNames[i]);
-		newLabels.push_back(d.labels[i]);
-	}
-
-	d.images = newImages;
-	d.fileNames = newFileNames;
-	d.labels = newLabels;
-}
-
-void keepEvenImages(Dataset &d)
-{
-	keepImages(d, 0);
-}
-
-void keepOddImages(Dataset &d)
-{
-	keepImages(d, 1);
-}
-
-void loadFaceCache(const string &path, map<string, Mat> &faceCache)
-{
-	faceCache.clear();
-
-	Mat dbMat = cv::imread(path + "_images.tiff", cv::IMREAD_UNCHANGED);
-
-	if (dbMat.empty())
-		return;
-
-	FileStorage fs{path + "_paths.yaml", FileStorage::READ};
-
-	if (!fs.isOpened())
-		return;
-
-	Size imageSize;
-	cv::read(fs["image_size"], imageSize, Size{-1, -1});
-
-	vector<cv::String> paths;
-	cv::read(fs["paths"], paths);
-
-	if ((int)paths.size() != dbMat.rows ||
-			imageSize.width * imageSize.height != dbMat.cols)
-		return;
-
-	for (int i = 0; i < dbMat.rows; i++) {
-		faceCache[paths[i]] = dbMat.row(i).reshape(0, imageSize.height);
-	}
-}
-
-void saveFaceCache(const string &path, const map<string, Mat> &faceCache)
-{
-	int n = faceCache.size();
-
-	if (n == 0)
-		return;
-
-	Size size = faceCache.begin()->second.size();
-	int type = faceCache.begin()->second.type();
-
-	vector<string> paths;
-	paths.reserve(n);
-	vector<Mat> images;
-	images.reserve(n);
-
-	for (pair<string, Mat> p : faceCache) {
-		paths.push_back(p.first);
-		images.push_back(p.second);
-	}
-
-	Mat dbMat = asRowMatrix(images, type);
-
-	cv::imwrite(path + "_images.tiff", dbMat);
-
-	FileStorage fs{path + "_paths.yaml", FileStorage::WRITE};
-
-	if (!fs.isOpened())
-		return;
-
-	fs << "image_size" << size;
-	fs << "paths" << paths;
-}
-
 struct image_item
 {
 	Mat image;
@@ -637,9 +456,6 @@ void normalizeFace(
 	std::vector<Rect> faces;
 	faceClassifier.detectMultiScale(image, faces, 1.05, 12);
 
-	std::vector<Rect> eyes;
-	eyeClassifier.detectMultiScale(image, eyes);
-
 	if (faces.size() == 1) {
 		_dst.create(outputSize, outputSize, CV_8U);
 		Mat dst = _dst.getMat();
@@ -680,58 +496,9 @@ void normalizeFace(
 			cv::rectangle(display, rect, Scalar{0, 0, 255}, 2);
 		}
 
-		for (Rect rect : eyes) {
-			cv::rectangle(display, rect, Scalar{0, 255, 0}, 2);
-			cv::circle(display, (rect.tl() + rect.br()) / 2, 2, Scalar{255, 0, 0}, -1);
-		}
-
 		cv::imshow("w", display);
 		cv::waitKey(1);
 	}
-}
-
-void normalizeFaceDataset(
-		Dataset &dataset,
-		CascadeClassifier &faceClassifier,
-		CascadeClassifier &eyeClassifier,
-		map<string, Mat> &faceCache,
-		int outputSize = 128)
-{
-	vector<Mat> newImages;
-	vector<int> newLabels;
-	vector<string> newFileNames;
-
-	for (int i = 0; i < (int)dataset.images.size(); i++) {
-		Mat normalized;
-
-		auto it = faceCache.find(dataset.fileNames[i]);
-
-		if (it != faceCache.end() && it->second.size() == Size{outputSize, outputSize}) {
-			normalized = it->second.clone();
-		}
-		else {
-			normalizeFace(
-					dataset.images[i],
-					normalized,
-					faceClassifier,
-					eyeClassifier,
-					outputSize);
-
-			if (!normalized.empty()) {
-				faceCache[dataset.fileNames[i]] = normalized;
-			}
-		}
-
-		if (!normalized.empty()) {
-			newImages.push_back(normalized);
-			newLabels.push_back(dataset.labels[i]);
-			newFileNames.push_back(dataset.fileNames[i]);
-		}
-	}
-
-	dataset.images = newImages;
-	dataset.labels = newLabels;
-	dataset.fileNames = newFileNames;
 }
 
 vector<int> normalizeFacesVJ(
@@ -914,73 +681,6 @@ void normalizeFaceDatasetDlib(
 	dataset.labels = newLabels;
 }
 */
-
-struct EigenFacesModel
-{
-	int dimensions;
-	cv::PCA pca;
-
-	vector<Mat> projections;
-
-	vector<Mat> faces;
-	vector<int> labels;
-	vector<string> labelNames;
-};
-
-void createEigenFacesModel(EigenFacesModel &model, const Dataset &dataset, int dimensions)
-{
-	CV_Assert(dataset.images.size() > 0);
-	CV_Assert(dataset.images.size() == dataset.labels.size());
-
-	int n = dataset.images.size();
-
-	if (dimensions <= 0 || dimensions > n) {
-		dimensions = n;
-	}
-
-	Mat data = asRowMatrix(dataset.images, CV_32F);
-
-	std::cout << "BEGIN PCA" << std::endl;
-
-	model.pca = cv::PCA{data, cv::noArray(), cv::PCA::DATA_AS_ROW, dimensions};
-
-	std::cout << "END PCA" << std::endl;
-
-	if (false) {
-		Mat mean = model.pca.mean.reshape(1, dataset.images[0].rows);
-		mean /= 255;
-
-		Mat basis = model.pca.eigenvectors.reshape(1, dataset.images[0].rows * dimensions).clone();
-		cv::normalize(basis, basis, 0, 1, cv::NORM_MINMAX, CV_32F);
-
-		cv::vconcat(mean, basis, basis);
-
-		cv::imshow("w", basis);
-		cv::waitKey(0);
-	}
-
-	for (int i = 0; i < n; i++) {
-		if (false) {
-			cv::imshow("w", data.row(i).reshape(1, dataset.images[0].rows) / 255);
-			cv::waitKey(0);
-		}
-
-		Mat projection = model.pca.project(data.row(i));
-		model.projections.push_back(projection);
-
-		if (false) {
-			cv::imshow("w", model.pca.backProject(projection).reshape(1, dataset.images[0].rows) / 255);
-			cv::waitKey(0);
-		}
-	}
-
-	// TODO(Andrey): Deep copy?
-
-	model.faces = dataset.images;
-	model.labels = dataset.labels;
-	model.labelNames = dataset.labelNames;
-
-}
 
 void visualizeEigenSpaceDots(
 		const vector<Mat> &trainVectors,
@@ -1314,35 +1014,6 @@ vector<int> classifyKNN(Mat trainProj, const vector<int> &trainLabels, int label
 	return chosenLabels;
 }
 
-void predict(EigenFacesModel &model, Dataset &testDataset)
-{
-	vector<Mat> testProjectionsList;
-
-	Mat trainProjections = asRowMatrix(model.projections, CV_32F);
-	Mat testProjections = model.pca.project(asRowMatrix(testDataset.images, CV_32F));
-
-	for (int i = 0; i < testProjections.rows; i++) {
-		testProjectionsList.push_back(testProjections.row(i).clone());
-	}
-
-	vector<int> chosenLabels = classifyKNN(trainProjections, model.labels, model.labelNames.size(), testProjections, 5);
-
-	int correct = 0;
-
-	for (int i = 0; i < (int)chosenLabels.size(); i++) {
-		std::cout << testDataset.labels[i] << " -> " << chosenLabels[i] << std::endl;
-		if (model.labelNames[chosenLabels[i]] == testDataset.labelNames[testDataset.labels[i]]) {
-			correct++;
-		}
-	}
-
-	printf("%2.01f%% (%d/%d) correct\n", correct * 100.0f / chosenLabels.size(), correct, (int)chosenLabels.size());
-	fflush(stdout);
-
-	visualizeEigenSpaceLines(model.projections, model.labels, testProjectionsList, testDataset.labels);
-	visualizeEigenSpaceDots(model.projections, model.labels, testProjectionsList, testDataset.labels);
-}
-
 struct FaceRecSystem
 {
 	CascadeClassifier faceClassifier;
@@ -1350,8 +1021,6 @@ struct FaceRecSystem
 
 	//dlib::frontal_face_detector detector;
 	//dlib::shape_predictor pose_model;
-
-	map<string, Mat> faceCache;
 
 	ImageDB idb;
 
@@ -1367,10 +1036,6 @@ struct FaceRecSystem
 	Mat trainProj;
 	Mat testProj;
 
-	Dataset trainDS;
-	Dataset testDS;
-	EigenFacesModel model;
-
 	bool useDlib = false;
 
 	FaceRecSystem()
@@ -1385,7 +1050,6 @@ struct FaceRecSystem
 
 		//detector = dlib::get_frontal_face_detector();
 		//dlib::deserialize("../shape_predictor_68_face_landmarks.dat") >> pose_model;
-		loadFaceCache("face_cache", faceCache);
 
 		idb.load("idb.bin");
 	}
@@ -1421,16 +1085,6 @@ struct FaceRecSystem
 			allIds.insert(allIds.end(), ids.begin(), ids.end());
 		}
 
-		if (!useDlib) {
-			//normalizeFaceDataset(newDataset, faceClassifier, eyeClassifier, faceCache);
-		}
-		else {
-			//normalizeFaceDatasetDlib(newDataset, detector, pose_model);
-		}
-
-		// TODO(Andrey): Move to a background thread
-		idb.save("idb.bin");
-
 		return allIds;
 	}
 
@@ -1448,74 +1102,17 @@ struct FaceRecSystem
 
 	void train(const vector<string> &files)
 	{
-		Dataset newDataset;
-		Dataset tmpDataset;
+		trainIds.resize(0);
+		trainMore(files);
+	}
 
-		for (int i = 0; i < (int)files.size(); i++) {
-			string name = files[i];
-			string path = string{name.begin(), std::find(name.begin(), name.end(), '#')};
-			string tag = string{std::find(name.begin(), name.end(), '#'), name.end()};
-
-			if (!readDataset("../images/" + path, tmpDataset)) {
-				std::cout << "ERROR: Clouldn't load dataset" << std::endl;
-			}
-
-			if (tag == "#even") {
-				//filterMod2(ids, 0);
-				keepEvenImages(tmpDataset);
-			}
-			else if (tag == "#odd") {
-				//filterMod2(ids, 1);
-				keepOddImages(tmpDataset);
-			}
-
-			addToDataset(newDataset, tmpDataset);
-		}
-
-		trainIds = loadFaceDataset(files);
-
-		for (size_t i = 0; i < trainIds.size(); i++) {
-			image_item m = idb.items[trainIds[i]];
-			std::cout << m.path << std::endl;
-			std::cout << newDataset.fileNames[i] << std::endl;
-
-			CV_Assert(m.path == newDataset.fileNames[i]);
-			CV_Assert(idb.labelNames[m.label] == newDataset.labelNames[newDataset.labels[i]]);
-			int nnz = cv::countNonZero(m.image != newDataset.images[i]);
-			CV_Assert(nnz == 0);
-		}
-
-		trainIds = normalizeFacesVJ(idb, trainIds, faceClassifier, eyeClassifier);
-
+	void trainMore(const vector<string> &files)
+	{
+		vector<int> newIds = loadFaceDataset(files);
+		newIds = normalizeFacesVJ(idb, newIds, faceClassifier, eyeClassifier);
 		idb.save("idb.bin");
-
-		normalizeFaceDataset(newDataset, faceClassifier, eyeClassifier, faceCache);
-		saveFaceCache("face_cache", faceCache);
-
+		trainIds.insert(trainIds.end(), newIds.begin(), newIds.end());
 		trainData = ids2RowMatrix(trainIds, CV_32F);
-
-		CV_Assert(trainIds.size() == newDataset.images.size());
-
-		for (size_t i = 0; i < trainIds.size(); i++) {
-			image_item m = idb.items[trainIds[i]];
-			string path = string{m.path.begin(), std::find(m.path.begin(), m.path.end(), '#')};
-			std::cout << m.path << std::endl;
-
-			std::cout << path << std::endl;
-			std::cout << newDataset.fileNames[i] << std::endl;
-
-			CV_Assert(path == newDataset.fileNames[i]);
-			CV_Assert(idb.labelNames[m.label] == newDataset.labelNames[newDataset.labels[i]]);
-			int nnz = cv::countNonZero(m.image != newDataset.images[i]);
-			CV_Assert(nnz == 0);
-		}
-
-		clearDataset(trainDS);
-		addToDataset(trainDS, newDataset);
-
-		if (trainDS.images.size() > 0) {
-			createEigenFacesModel(model, trainDS, 16);
-		}
 
 		if (trainIds.size() > 0) {
 			std::cout << "BEGIN PCA" << std::endl;
@@ -1525,17 +1122,7 @@ struct FaceRecSystem
 		}
 	}
 
-	void trainMore(const vector<string> &files)
-	{
-		std::cout << "Coming soon :)" << std::endl;
-	}
-
-	void visualize(const vector<string> &files)
-	{
-		std::cout << "Coming soon :)" << std::endl;
-	}
-
-	void predict2()
+	void predict()
 	{
 		vector<Mat> trainProjectionsList;
 		vector<int> trainLabels;
@@ -1555,11 +1142,6 @@ struct FaceRecSystem
 
 		vector<int> chosenLabels = classifyKNN(trainProj, trainLabels, idb.labelNames.size(), testProj, 5);
 
-		std::cout << trainProj.size() << std::endl;
-		std::cout << trainLabels.size() << std::endl;
-		std::cout << idb.labelNames.size() << std::endl;
-		std::cout << testProj.size() << std::endl;
-
 		int correct = 0;
 
 		for (int i = 0; i < (int)chosenLabels.size(); i++) {
@@ -1578,44 +1160,6 @@ struct FaceRecSystem
 
 	void test(const vector<string> &files)
 	{
-		Dataset newDataset;
-		Dataset tmpDataset;
-
-		for (int i = 0; i < (int)files.size(); i++) {
-			string name = files[i];
-			string path = string{name.begin(), std::find(name.begin(), name.end(), '#')};
-			string tag = string{std::find(name.begin(), name.end(), '#'), name.end()};
-
-			if (!readDataset("../images/" + path, tmpDataset)) {
-				std::cout << "ERROR: Clouldn't load dataset" << std::endl;
-			}
-
-			idb.addDataset("../images/" + path);
-			idb.save("idb.bin");
-
-			if (tag == "#even") {
-				keepEvenImages(tmpDataset);
-			}
-			else if (tag == "#odd") {
-				keepOddImages(tmpDataset);
-			}
-
-			addToDataset(newDataset, tmpDataset);
-		}
-
-		if (!useDlib)
-			normalizeFaceDataset(newDataset, faceClassifier, eyeClassifier, faceCache);
-		else
-			/*normalizeFaceDatasetDlib(newDataset, detector, pose_model);*/;
-		saveFaceCache("face_cache", faceCache);
-
-		clearDataset(testDS);
-		addToDataset(testDS, newDataset);
-
-		if (trainDS.images.size() > 0 && testDS.images.size() > 0) {
-			predict(model, testDS);
-		}
-
 		testIds = loadFaceDataset(files);
 		testIds = normalizeFacesVJ(idb, testIds, faceClassifier, eyeClassifier);
 		idb.save("idb.bin");
@@ -1623,39 +1167,66 @@ struct FaceRecSystem
 
 		if (trainIds.size() > 0 && testIds.size() > 0) {
 			testProj = pca.project(testData);
-			predict2();
-		}
-
-		CV_Assert(testIds.size() == newDataset.images.size());
-
-		for (size_t i = 0; i < testIds.size(); i++) {
-			image_item m = idb.items[testIds[i]];
-			string path = string{m.path.begin(), std::find(m.path.begin(), m.path.end(), '#')};
-
-			CV_Assert(path == newDataset.fileNames[i]);
-			CV_Assert(idb.labelNames[m.label] == newDataset.labelNames[newDataset.labels[i]]);
-			int nnz = cv::countNonZero(m.image != newDataset.images[i]);
-			CV_Assert(nnz == 0);
+			predict();
 		}
 	}
 
 	void showEigenfaces()
 	{
+		if (trainIds.size() == 0) {
+			std::cout << "No train data." << std::endl;
+		}
+
 		int imageRows = idb.items[trainIds[0]].image.rows;
 
 		Mat mean = pca.mean.reshape(1, imageRows).clone();
 		mean /= 255;
 
-		CV_Assert(cv::countNonZero(model.pca.mean != pca.mean) == 0);
-		CV_Assert(cv::countNonZero(model.pca.eigenvectors != pca.eigenvectors) == 0);
-
-		Mat basis = pca.eigenvectors.reshape(1, imageRows * maxDimensions).clone();
+		Mat basis = pca.eigenvectors.reshape(1, imageRows * pca.eigenvectors.rows).clone();
 		cv::normalize(basis, basis, 0, 1, cv::NORM_MINMAX, CV_32F);
 
 		cv::vconcat(mean, basis, basis);
 
 		cv::imshow("w", basis);
 		cv::waitKey(0);
+	}
+
+	void showProjetions(const Mat &data, int imageRows)
+	{
+		for (int i = 0; i < data.rows; i++) {
+			Mat image = data.row(i).reshape(1, imageRows) / 255;
+			Mat projection = pca.project(data.row(i));
+			Mat backProjection = pca.backProject(projection).reshape(1, imageRows) / 255;
+
+			cv::hconcat(image, backProjection, image);
+			cv::imshow("w", image);
+
+			int pressedKey = cv::waitKey(0);
+
+			if (pressedKey == 'q') {
+				break;
+			}
+		}
+	}
+
+	void showTrainProjections()
+	{
+		if (trainIds.size() == 0) {
+			std::cout << "No train data." << std::endl;
+		}
+		else {
+			showProjetions(trainData, idb.items[trainIds[0]].image.rows);
+		}
+	}
+
+	void showTestProjections()
+	{
+		if (trainIds.size() == 0 || testIds.size() == 0) {
+			std::cout << "Not enough data." << std::endl;
+		}
+		else {
+			showProjetions(testData, idb.items[testIds[0]].image.rows);
+		}
 	}
 };
 
@@ -1711,11 +1282,19 @@ int main(int argc, char *argv[])
 		else if (words[0] == "test" || words[0] == "tst") {
 			facerec.test(vector<string>{words.begin() + 1, words.end()});
 		}
-		else if (words[0] == "showEigenfaces" || words[0] == "eig") {
+		else if (words[0] == "show_eigenfaces" || words[0] == "eig") {
 			facerec.showEigenfaces();
+		}
+		else if (words[0] == "show_train" || words[0] == "shtr") {
+			facerec.showTrainProjections();
+		}
+		else if (words[0] == "show_test" || words[0] == "shtst") {
+			facerec.showTestProjections();
 		}
 		else {
 			std::cout << "Unkown command '" << words[0] << "'. Skipping to next line." << std::endl;
 		}
+
+		cv::destroyAllWindows();
 	}
 }
