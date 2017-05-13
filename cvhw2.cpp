@@ -407,9 +407,8 @@ struct ImageDB
 			items.back().label = itemHeader.label;
 			items.back().image = Mat{itemHeader.imageRows, itemHeader.imageCols, itemHeader.imageType};
 
-			if (fread(items.back().image.data, itemHeader.imageSize, 1, f) != 1) {
+			if (fread(items.back().image.data, itemHeader.imageSize, 1, f) != 1 * !!itemHeader.imageSize)
 				goto error;
-			}
 
 			textBuffer.resize(itemHeader.pathSize);
 
@@ -435,6 +434,8 @@ struct ImageDB
 		}
 
 		fclose(f);
+		std::cout << "ImageDB loaded." << std::endl;
+
 		return;
 
 error:
@@ -473,7 +474,7 @@ error:
 
 			if (fwrite(&itemHeader, sizeof(itemHeader), 1, f) != 1)
 				goto error;
-			if (fwrite(m.image.data, itemHeader.imageSize, 1, f) != 1)
+			if (fwrite(m.image.data, itemHeader.imageSize, 1, f) != 1 * !!itemHeader.imageSize)
 				goto error;
 			if (fwrite(c_path, itemHeader.pathSize, 1, f) != 1)
 				goto error;
@@ -513,7 +514,19 @@ error:
 		}
 	}
 
-	int getImageId(const string &path, int label = -1)
+	int getImageId(const string &path)
+	{
+		auto it = path2item.find(path);
+
+		if (it == path2item.end()) {
+			return -1;
+		}
+		else {
+			return it->second;
+		}
+	}
+
+	int getOrLoadImage(const string &path, int label = -1)
 	{
 		auto it = path2item.find(path);
 
@@ -539,6 +552,22 @@ error:
 		}
 		else {
 			return it->second;
+		}
+	}
+
+	int addImage(const image_item &m)
+	{
+		auto it = path2item.find(m.path);
+
+		if (it == path2item.end()) {
+			items.push_back(m);
+			path2item[m.path] = items.size() - 1;
+			return items.size() - 1;
+		}
+		else {
+			int id = it->second;
+			items[id] = m;
+			return id;
 		}
 	}
 
@@ -573,7 +602,7 @@ error:
 					continue;
 
 				string filePath = directoryPath + "/" + imageFile;
-				int imageId = getImageId(filePath, directoryLabel);
+				int imageId = getOrLoadImage(filePath, directoryLabel);
 
 				if (imageId >= 0)
 					addedIds.push_back(imageId);
@@ -670,6 +699,7 @@ void normalizeFaceDataset(
 {
 	vector<Mat> newImages;
 	vector<int> newLabels;
+	vector<string> newFileNames;
 
 	for (int i = 0; i < (int)dataset.images.size(); i++) {
 		Mat normalized;
@@ -695,11 +725,57 @@ void normalizeFaceDataset(
 		if (!normalized.empty()) {
 			newImages.push_back(normalized);
 			newLabels.push_back(dataset.labels[i]);
+			newFileNames.push_back(dataset.fileNames[i]);
 		}
 	}
 
 	dataset.images = newImages;
 	dataset.labels = newLabels;
+	dataset.fileNames = newFileNames;
+}
+
+vector<int> normalizeFacesVJ(
+		ImageDB &idb,
+		vector<int> &ids,
+		CascadeClassifier &faceClassifier,
+		CascadeClassifier &eyeClassifier,
+		int outputSize = 128)
+{
+	vector<int> resultIds;
+
+	for (auto id : ids) {
+		const image_item m = idb.items[id];
+
+		string newPath = m.path + "#NORMALIZED_VJ";
+		int normalizedId = idb.getImageId(newPath);
+
+		if (normalizedId < 0) {
+			Mat normalized;
+
+			normalizeFace(
+					m.image,
+					normalized,
+					faceClassifier,
+					eyeClassifier,
+					outputSize);
+
+			image_item newItem;
+
+			// NOTE(Andrey): We add empty images to the DB too,
+			// to avoid processing them each time
+
+			newItem.image = normalized;
+			newItem.label = m.label;
+			newItem.path = newPath;
+			normalizedId = idb.addImage(newItem);
+		}
+
+		if (!idb.items[normalizedId].image.empty()) {
+			resultIds.push_back(normalizedId);
+		}
+	}
+
+	return resultIds;
 }
 
 /*
@@ -1204,14 +1280,6 @@ void visualizeEigenSpaceLines(
 	}
 }
 
-void visualizePrediction(
-		EigenFacesModel model,
-		Dataset &testDataset,
-		Mat testProjections,
-		vector<int> testPredictions)
-{
-}
-
 vector<int> classifyKNN(Mat trainProj, const vector<int> &trainLabels, int labelCount, Mat testProj, int k = 1)
 {
 	vector<std::pair<float, int>> distancesAndLabels;
@@ -1287,9 +1355,20 @@ struct FaceRecSystem
 
 	ImageDB idb;
 
+	vector<int> trainIds;
+	vector<int> testIds;
+
+	Mat trainData;
+	Mat testData;
+
+	int maxDimensions = 16;
+	cv::PCA pca;
+
+	Mat trainProj;
+	Mat testProj;
+
 	Dataset trainDS;
 	Dataset testDS;
-
 	EigenFacesModel model;
 
 	bool useDlib = false;
@@ -1311,6 +1390,62 @@ struct FaceRecSystem
 		idb.load("idb.bin");
 	}
 
+	void filterMod2(vector<int> &v, int mod2)
+	{
+		vector<int> newValues;
+
+		for (size_t i = mod2; i < v.size(); i += 2)
+			newValues.push_back(v[i]);
+
+		v = newValues;
+	}
+
+	vector<int> loadFaceDataset(const vector<string> &files)
+	{
+		vector<int> allIds;
+
+		for (int i = 0; i < (int)files.size(); i++) {
+			string name = files[i];
+			string path = string{name.begin(), std::find(name.begin(), name.end(), '#')};
+			string tag = string{std::find(name.begin(), name.end(), '#'), name.end()};
+
+			vector<int> ids = idb.addDataset("../images/" + path);
+
+			if (tag == "#even") {
+				filterMod2(ids, 0);
+			}
+			else if (tag == "#odd") {
+				filterMod2(ids, 1);
+			}
+
+			allIds.insert(allIds.end(), ids.begin(), ids.end());
+		}
+
+		if (!useDlib) {
+			//normalizeFaceDataset(newDataset, faceClassifier, eyeClassifier, faceCache);
+		}
+		else {
+			//normalizeFaceDatasetDlib(newDataset, detector, pose_model);
+		}
+
+		// TODO(Andrey): Move to a background thread
+		idb.save("idb.bin");
+
+		return allIds;
+	}
+
+	Mat ids2RowMatrix(vector<int> ids, int type)
+	{
+		vector<Mat> images;
+		images.reserve(ids.size());
+
+		for (int i : ids) {
+			images.push_back(idb.items[i].image);
+		}
+
+		return asRowMatrix(images, type);
+	}
+
 	void train(const vector<string> &files)
 	{
 		Dataset newDataset;
@@ -1325,30 +1460,68 @@ struct FaceRecSystem
 				std::cout << "ERROR: Clouldn't load dataset" << std::endl;
 			}
 
-			idb.addDataset("../images/" + path);
-			idb.save("idb.bin");
-
 			if (tag == "#even") {
+				//filterMod2(ids, 0);
 				keepEvenImages(tmpDataset);
 			}
 			else if (tag == "#odd") {
+				//filterMod2(ids, 1);
 				keepOddImages(tmpDataset);
 			}
 
 			addToDataset(newDataset, tmpDataset);
 		}
 
-		if (!useDlib)
-			normalizeFaceDataset(newDataset, faceClassifier, eyeClassifier, faceCache);
-		else
-			/*normalizeFaceDatasetDlib(newDataset, detector, pose_model);*/;
+		trainIds = loadFaceDataset(files);
+
+		for (size_t i = 0; i < trainIds.size(); i++) {
+			image_item m = idb.items[trainIds[i]];
+			std::cout << m.path << std::endl;
+			std::cout << newDataset.fileNames[i] << std::endl;
+
+			CV_Assert(m.path == newDataset.fileNames[i]);
+			CV_Assert(idb.labelNames[m.label] == newDataset.labelNames[newDataset.labels[i]]);
+			int nnz = cv::countNonZero(m.image != newDataset.images[i]);
+			CV_Assert(nnz == 0);
+		}
+
+		trainIds = normalizeFacesVJ(idb, trainIds, faceClassifier, eyeClassifier);
+
+		idb.save("idb.bin");
+
+		normalizeFaceDataset(newDataset, faceClassifier, eyeClassifier, faceCache);
 		saveFaceCache("face_cache", faceCache);
+
+		trainData = ids2RowMatrix(trainIds, CV_32F);
+
+		CV_Assert(trainIds.size() == newDataset.images.size());
+
+		for (size_t i = 0; i < trainIds.size(); i++) {
+			image_item m = idb.items[trainIds[i]];
+			string path = string{m.path.begin(), std::find(m.path.begin(), m.path.end(), '#')};
+			std::cout << m.path << std::endl;
+
+			std::cout << path << std::endl;
+			std::cout << newDataset.fileNames[i] << std::endl;
+
+			CV_Assert(path == newDataset.fileNames[i]);
+			CV_Assert(idb.labelNames[m.label] == newDataset.labelNames[newDataset.labels[i]]);
+			int nnz = cv::countNonZero(m.image != newDataset.images[i]);
+			CV_Assert(nnz == 0);
+		}
 
 		clearDataset(trainDS);
 		addToDataset(trainDS, newDataset);
 
 		if (trainDS.images.size() > 0) {
 			createEigenFacesModel(model, trainDS, 16);
+		}
+
+		if (trainIds.size() > 0) {
+			std::cout << "BEGIN PCA" << std::endl;
+			pca = cv::PCA{trainData, cv::noArray(), cv::PCA::DATA_AS_ROW, maxDimensions};
+			std::cout << "END PCA" << std::endl;
+			trainProj = pca.project(trainData);
 		}
 	}
 
@@ -1360,6 +1533,47 @@ struct FaceRecSystem
 	void visualize(const vector<string> &files)
 	{
 		std::cout << "Coming soon :)" << std::endl;
+	}
+
+	void predict2()
+	{
+		vector<Mat> trainProjectionsList;
+		vector<int> trainLabels;
+
+		for (int i = 0; i < trainProj.rows; i++) {
+			trainProjectionsList.push_back(trainProj.row(i).clone());
+			trainLabels.push_back(idb.items[trainIds[i]].label);
+		}
+
+		vector<Mat> testProjectionsList;
+		vector<int> testLabels;
+
+		for (int i = 0; i < testProj.rows; i++) {
+			testProjectionsList.push_back(testProj.row(i).clone());
+			testLabels.push_back(idb.items[testIds[i]].label);
+		}
+
+		vector<int> chosenLabels = classifyKNN(trainProj, trainLabels, idb.labelNames.size(), testProj, 5);
+
+		std::cout << trainProj.size() << std::endl;
+		std::cout << trainLabels.size() << std::endl;
+		std::cout << idb.labelNames.size() << std::endl;
+		std::cout << testProj.size() << std::endl;
+
+		int correct = 0;
+
+		for (int i = 0; i < (int)chosenLabels.size(); i++) {
+			std::cout << idb.items[testIds[i]].label << " -> " << chosenLabels[i] << std::endl;
+			if (idb.items[testIds[i]].label == chosenLabels[i]) {
+				correct++;
+			}
+		}
+
+		printf("%2.01f%% (%d/%d) correct\n", correct * 100.0f / chosenLabels.size(), correct, (int)chosenLabels.size());
+		fflush(stdout);
+
+		visualizeEigenSpaceLines(trainProjectionsList, trainLabels, testProjectionsList, testLabels);
+		visualizeEigenSpaceDots(trainProjectionsList, trainLabels, testProjectionsList, testLabels);
 	}
 
 	void test(const vector<string> &files)
@@ -1401,6 +1615,47 @@ struct FaceRecSystem
 		if (trainDS.images.size() > 0 && testDS.images.size() > 0) {
 			predict(model, testDS);
 		}
+
+		testIds = loadFaceDataset(files);
+		testIds = normalizeFacesVJ(idb, testIds, faceClassifier, eyeClassifier);
+		idb.save("idb.bin");
+		testData = ids2RowMatrix(testIds, CV_32F);
+
+		if (trainIds.size() > 0 && testIds.size() > 0) {
+			testProj = pca.project(testData);
+			predict2();
+		}
+
+		CV_Assert(testIds.size() == newDataset.images.size());
+
+		for (size_t i = 0; i < testIds.size(); i++) {
+			image_item m = idb.items[testIds[i]];
+			string path = string{m.path.begin(), std::find(m.path.begin(), m.path.end(), '#')};
+
+			CV_Assert(path == newDataset.fileNames[i]);
+			CV_Assert(idb.labelNames[m.label] == newDataset.labelNames[newDataset.labels[i]]);
+			int nnz = cv::countNonZero(m.image != newDataset.images[i]);
+			CV_Assert(nnz == 0);
+		}
+	}
+
+	void showEigenfaces()
+	{
+		int imageRows = idb.items[trainIds[0]].image.rows;
+
+		Mat mean = pca.mean.reshape(1, imageRows).clone();
+		mean /= 255;
+
+		CV_Assert(cv::countNonZero(model.pca.mean != pca.mean) == 0);
+		CV_Assert(cv::countNonZero(model.pca.eigenvectors != pca.eigenvectors) == 0);
+
+		Mat basis = pca.eigenvectors.reshape(1, imageRows * maxDimensions).clone();
+		cv::normalize(basis, basis, 0, 1, cv::NORM_MINMAX, CV_32F);
+
+		cv::vconcat(mean, basis, basis);
+
+		cv::imshow("w", basis);
+		cv::waitKey(0);
 	}
 };
 
@@ -1453,11 +1708,11 @@ int main(int argc, char *argv[])
 		else if (words[0] == "train+" || words[0] == "tr+") {
 			facerec.trainMore(vector<string>{words.begin() + 1, words.end()});
 		}
-		else if (words[0] == "visualize" || words[0] == "v") {
-			facerec.visualize(vector<string>{words.begin() + 1, words.end()});
-		}
 		else if (words[0] == "test" || words[0] == "tst") {
 			facerec.test(vector<string>{words.begin() + 1, words.end()});
+		}
+		else if (words[0] == "showEigenfaces" || words[0] == "eig") {
+			facerec.showEigenfaces();
 		}
 		else {
 			std::cout << "Unkown command '" << words[0] << "'. Skipping to next line." << std::endl;
