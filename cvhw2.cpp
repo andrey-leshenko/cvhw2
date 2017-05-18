@@ -6,6 +6,7 @@
 #include <string>
 #include <fstream>
 #include <utility>
+#include <thread>
 
 #include <stdio.h>
 #include <stdint.h>
@@ -264,7 +265,7 @@ error:
 		fclose(f);
 	}
 
-	void save(const string &path)
+	void save(const string &path) const
 	{
 		FILE *f = fopen(path.c_str(), "wb");
 
@@ -281,7 +282,7 @@ error:
 		if (fwrite(&dbHeader, sizeof(dbHeader), 1, f) != 1)
 			goto error;
 
-		for (image_item &m : items) {
+		for (const image_item &m : items) {
 			const char *c_path = m.path.c_str();
 
 			image_item_header itemHeader = {
@@ -301,7 +302,7 @@ error:
 				goto error;
 		}
 
-		for (string &label : labelNames) {
+		for (const string &label : labelNames) {
 			const char *c_label = label.c_str();
 
 			string_header header = {
@@ -1174,6 +1175,28 @@ struct FaceRecSystem
 	DistanceType distanceType = DistanceType::KNN;
 	bool useDlib = false;
 
+	std::thread savingThread;
+
+	void loadImageDB()
+	{
+		idb.load("idb.bin");
+	}
+
+	void saveImageDB()
+	{
+		ImageDB idbCopy = idb;
+
+		// NOTE: The new thread will first wait for the old thread
+
+		savingThread = std::thread{[idbCopy](std::thread oldSavingThread) {
+			if (oldSavingThread.joinable()) {
+				oldSavingThread.join();
+			}
+
+			idbCopy.save("idb.bin");
+		}, std::move(savingThread)};
+	}
+
 	FaceRecSystem()
 	{
 		faceClassifier = CascadeClassifier{"../images/haarcascade_frontalface_default.xml"};
@@ -1188,8 +1211,14 @@ struct FaceRecSystem
 		detector = dlib::get_frontal_face_detector();
 		dlib::deserialize("../shape_predictor_68_face_landmarks.dat") >> pose_model;
 #endif
+		loadImageDB();
+	}
 
-		idb.load("idb.bin");
+	~FaceRecSystem()
+	{
+		if (savingThread.joinable()) {
+			savingThread.join();
+		}
 	}
 
 	void filterMod2(vector<int> &v, int mod2)
@@ -1264,7 +1293,7 @@ struct FaceRecSystem
 		vector<int> newIds = loadFaceDataset(files);
 		newIds = normalizeFaces(newIds);
 
-		idb.save("idb.bin");
+		saveImageDB();
 
 		trainIds.insert(trainIds.end(), newIds.begin(), newIds.end());
 		trainData = ids2RowMatrix(trainIds, CV_32F);
@@ -1332,7 +1361,9 @@ struct FaceRecSystem
 	{
 		testIds = loadFaceDataset(files);
 		testIds = normalizeFaces(testIds);
-		idb.save("idb.bin");
+
+		saveImageDB();
+
 		testData = ids2RowMatrix(testIds, CV_32F);
 
 		if (trainIds.size() > 0 && testIds.size() > 0) {
