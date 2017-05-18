@@ -1303,9 +1303,52 @@ struct FaceRecSystem
 			std::cout << "No training data - can't test." << std::endl;
 		}
 		else {
-			std::cout << "BEGIN PCA" << std::endl;
-			pca = cv::PCA{trainData, cv::noArray(), cv::PCA::DATA_AS_ROW, maxDimensions};
-			std::cout << "END PCA" << std::endl;
+			//
+			// We use the ImageDB caching mechanism to avoid redoing PCA.
+			// The path of a PCA is made from the combined paths of all
+			// train images, plus the dimension of the PCA.
+			//
+
+			string pcaPath = "";
+
+			if (trainIds.size() > 0) {
+				pcaPath.reserve((idb.items[trainIds[0]].path.size() + 1) * trainIds.size() + 10);
+			}
+
+			for (int i : trainIds) {
+				pcaPath += idb.items[i].path;
+				pcaPath += ";";
+			}
+
+			pcaPath += "##PCA#DIMS=" + std::to_string(maxDimensions) + "#EIGENVECTORS";
+
+			auto eigenvectorsIt = idb.path2item.find(pcaPath);
+
+			if (eigenvectorsIt != idb.path2item.end()) {
+				Mat mean;
+				int reduceToSingleRow = 0;
+				cv::reduce(trainData, mean, reduceToSingleRow, cv::REDUCE_AVG);
+
+				Mat eigenvectors = idb.items[eigenvectorsIt->second].image;
+
+				pca.mean = mean;
+				pca.eigenvectors = eigenvectors;
+
+				std::cout << "PCA loaded" << std::endl;
+			}
+			else {
+				std::cout << "BEGIN PCA" << std::endl;
+				pca = cv::PCA{trainData, cv::noArray(), cv::PCA::DATA_AS_ROW, maxDimensions};
+				std::cout << "END PCA" << std::endl;
+
+				image_item savedPCA;
+				savedPCA.image = pca.eigenvectors;
+				savedPCA.path = pcaPath;
+				savedPCA.label = -1;
+
+				idb.addImage(savedPCA);
+			}
+
 			trainProj = pca.project(trainData);
 		}
 	}
