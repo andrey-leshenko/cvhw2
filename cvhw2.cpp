@@ -1014,8 +1014,119 @@ vector<int> classifyKNN(Mat trainProj, const vector<int> &trainLabels, int label
 	return chosenLabels;
 }
 
+void labelMeanAndSD(Mat data, const vector<int> &labels, int labelCount, Mat &outMean, Mat &outSD)
+{
+	//
+	// You can see that the mean and variance calculations are very similar.
+	// They are actually part of a more general idea called "Moments":
+	// the mean is the first raw moment, and the variance is the second central
+	// moment (moment about the mean). You can read about them here:
+	//
+	// https://en.wikipedia.org/wiki/Moment_(mathematics)
+	//
+
+	Mat1f mean{labelCount, data.cols};
+	mean.setTo(0);
+
+	{
+		Mat1i count{1, labelCount, 0};
+
+		for (int i = 0; i < data.rows; i++) {
+			mean.row(labels[i]) += data.row(i);
+			count(labels[i])++;
+		}
+
+		for (int i = 0; i < labelCount; i++) {
+			if (count(i) != 0) {
+				mean.row(i) /= count(i);
+			}
+		}
+	}
+
+	Mat1f variance{labelCount, data.cols};
+	variance.setTo(0);
+
+	{
+		Mat1i count{1, labelCount, 0};
+
+		for (int i = 0; i < data.rows; i++) {
+			Mat1f diff = data.row(i) - mean.row(labels[i]);
+			variance.row(labels[i]) += diff.mul(diff);
+			count(labels[i])++;
+		}
+
+		for (int i = 0; i < labelCount; i++) {
+			if (count(i) != 0) {
+				variance.row(i) /= count(i);
+			}
+			else {
+				variance.row(i).setTo(-1);
+			}
+		}
+	}
+
+	Mat1f standardDeviation{labelCount, data.cols};
+
+	{
+		for (int i = 0; i < labelCount; i++) {
+			if (cv::countNonZero(variance.row(i) < 0) == 0) {
+				cv::sqrt(variance.row(i), standardDeviation.row(i));
+			}
+			else {
+				standardDeviation.row(i).setTo(-1);
+			}
+		}
+	}
+
+	outMean = mean;
+	outSD = standardDeviation;
+}
+
+vector<int> classifyMahalanobis(Mat trainProj, const vector<int> &trainLabels, int labelCount, Mat testProj)
+{
+	Mat1f mean;
+	Mat1f standardDeviation;
+
+	labelMeanAndSD(trainProj, trainLabels, labelCount,
+			mean, standardDeviation);
+
+	vector<int> chosenLabels;
+
+	for (int i = 0; i < testProj.rows; i++) {
+		Mat testVector = testProj.row(i);
+
+		int closestLabel = -1;
+		float minDistance = FLT_MAX;
+
+		for (int k = 0; k < labelCount; k++) {
+			Mat1f labelMean = mean.row(k);
+			Mat1f labelSD = standardDeviation.row(k);
+
+			if (cv::countNonZero(labelSD < 0) != 0) {
+				continue;
+			}
+
+			float distance = cv::norm((testVector - labelMean).mul(1 / labelSD), cv::NORM_L2);
+
+			if (distance < minDistance) {
+				minDistance = distance;
+				closestLabel = k;
+			}
+		}
+
+		chosenLabels.push_back(closestLabel);
+	}
+
+	return chosenLabels;
+}
+
 struct FaceRecSystem
 {
+	enum class DistanceType {
+		KNN,
+		Mahalanobis,
+	};
+
 	CascadeClassifier faceClassifier;
 	CascadeClassifier eyeClassifier;
 
@@ -1030,12 +1141,13 @@ struct FaceRecSystem
 	Mat trainData;
 	Mat testData;
 
-	int maxDimensions = 16;
+	int maxDimensions = 32;
 	cv::PCA pca;
 
 	Mat trainProj;
 	Mat testProj;
 
+	DistanceType distanceType = DistanceType::KNN;
 	bool useDlib = false;
 
 	FaceRecSystem()
@@ -1111,10 +1223,15 @@ struct FaceRecSystem
 		vector<int> newIds = loadFaceDataset(files);
 		newIds = normalizeFacesVJ(idb, newIds, faceClassifier, eyeClassifier);
 		idb.save("idb.bin");
+
 		trainIds.insert(trainIds.end(), newIds.begin(), newIds.end());
 		trainData = ids2RowMatrix(trainIds, CV_32F);
+		testIds.resize(0);
 
-		if (trainIds.size() > 0) {
+		if (trainIds.size() == 0) {
+			std::cout << "No training data - can't test." << std::endl;
+		}
+		else {
 			std::cout << "BEGIN PCA" << std::endl;
 			pca = cv::PCA{trainData, cv::noArray(), cv::PCA::DATA_AS_ROW, maxDimensions};
 			std::cout << "END PCA" << std::endl;
@@ -1140,12 +1257,26 @@ struct FaceRecSystem
 			testLabels.push_back(idb.items[testIds[i]].label);
 		}
 
-		vector<int> chosenLabels = classifyKNN(trainProj, trainLabels, idb.labelNames.size(), testProj, 5);
+		vector<int> chosenLabels;
+
+		switch (distanceType) {
+			case DistanceType::KNN:
+				chosenLabels = classifyKNN(trainProj, trainLabels, idb.labelNames.size(), testProj, 5);
+				break;
+			case DistanceType::Mahalanobis:
+				chosenLabels = classifyMahalanobis(trainProj, trainLabels, idb.labelNames.size(), testProj);
+				break;
+			default:
+				CV_Assert(0);
+				break;
+		};
 
 		int correct = 0;
 
 		for (int i = 0; i < (int)chosenLabels.size(); i++) {
-			std::cout << idb.items[testIds[i]].label << " -> " << chosenLabels[i] << std::endl;
+			int chosen = chosenLabels[i];
+			int realLabel = idb.items[testIds[i]].label;
+			std::cout << realLabel << " -> " << chosen << ((chosen == realLabel) ? "" : " X") << std::endl;
 			if (idb.items[testIds[i]].label == chosenLabels[i]) {
 				correct++;
 			}
@@ -1290,6 +1421,26 @@ int main(int argc, char *argv[])
 		}
 		else if (words[0] == "show_test" || words[0] == "shtst") {
 			facerec.showTestProjections();
+		}
+		else if (words[0] == "dist_type") {
+			if (words.size() > 1) {
+				if (words[1] == "knn" || words[1] == "KNN") {
+					facerec.distanceType = FaceRecSystem::DistanceType::KNN;
+				}
+				else if (words[1] == "mahalanobis" || words[1] == "Mahalanobis" || words[1] == "m" || words[1] == "M") {
+					facerec.distanceType = FaceRecSystem::DistanceType::Mahalanobis;
+				}
+				else {
+					std::cout << "Unkown distance " << words[1] << std::endl;
+				}
+			}
+
+			if (facerec.distanceType == FaceRecSystem::DistanceType::KNN) {
+				std::cout << "knn " << std::endl;
+			}
+			else if (facerec.distanceType == FaceRecSystem::DistanceType::Mahalanobis) {
+				std::cout << "mahalanobis" << std::endl;
+			}
 		}
 		else {
 			std::cout << "Unkown command '" << words[0] << "'. Skipping to next line." << std::endl;
