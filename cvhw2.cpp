@@ -12,13 +12,15 @@
 
 #include <opencv2/opencv.hpp>
 
-/*
+//#define USE_DLIB
+
+#ifdef USE_DLIB
 #include <dlib/opencv.h>
 #include <dlib/image_processing/frontal_face_detector.h>
 #include <dlib/image_processing/render_face_detections.h>
 #include <dlib/image_processing.h>
 #include <dlib/gui_widgets.h>
-*/
+#endif
 
 #ifdef __linux__
 
@@ -503,7 +505,7 @@ void normalizeFace(
 
 vector<int> normalizeFacesVJ(
 		ImageDB &idb,
-		vector<int> &ids,
+		const vector<int> &ids,
 		CascadeClassifier &faceClassifier,
 		CascadeClassifier &eyeClassifier,
 		int outputSize = 128)
@@ -545,7 +547,8 @@ vector<int> normalizeFacesVJ(
 	return resultIds;
 }
 
-/*
+#ifdef USE_DLIB
+
 vector<Point2f> convertDlibShapeToOpenCV(dlib::full_object_detection objectDet, Rect& outputRect)
 {
 	dlib::rectangle dlibRect = objectDet.get_rect();
@@ -651,36 +654,55 @@ vector<Mat> alignImageFaces(Mat image, dlib::frontal_face_detector detector, dli
 	return vector<Mat>();
 }
 
-void normalizeFaceDatasetDlib(
-		Dataset &dataset,
+vector<int> normalizeFacesDlib(
+		ImageDB &idb,
+		const vector<int> &ids,
 		dlib::frontal_face_detector detector,
 		dlib::shape_predictor pose_model)
 {
-	vector<Mat> newImages;
-	vector<int> newLabels;
+	vector<int> resultIds;
 
-	for (int i = 0; i < (int)dataset.images.size(); i++) {
-		vector<Mat> faces = alignImageFaces(dataset.images[i], detector, pose_model);
+	for (auto id : ids) {
+		const image_item m = idb.items[id];
 
-		if (faces.size() == 1) {
-			Mat dst = faces[0];
-			cv::cvtColor(dst, dst, cv::COLOR_BGR2GRAY);
-			cv::normalize(dst, dst, 0, 255, cv::NORM_MINMAX, CV_8UC1);
-			cv::equalizeHist(dst, dst);
-			dst.colRange(0, dst.cols * 2 / 10).setTo(0);
-			dst.colRange(dst.cols - dst.cols * 2 / 10, dst.cols).setTo(0);
-			cv::imshow("w", dst);
+		string newPath = m.path + "#NORMALIZED_DLIB";
+		int normalizedId = idb.getImageId(newPath);
 
-			cv::waitKey(1);
-			newImages.push_back(dst);
-			newLabels.push_back(dataset.labels[i]);
+		if (normalizedId < 0) {
+			vector<Mat> faces = alignImageFaces(m.image, detector, pose_model);
+
+			if (faces.size() >= 1) {
+				Mat normalized = faces[0];
+				cv::cvtColor(normalized, normalized, cv::COLOR_BGR2GRAY);
+				cv::normalize(normalized, normalized, 0, 255, cv::NORM_MINMAX, CV_8UC1);
+				cv::equalizeHist(normalized, normalized);
+				normalized.colRange(0, normalized.cols * 2 / 10).setTo(0);
+				normalized.colRange(normalized.cols - normalized.cols * 2 / 10, normalized.cols).setTo(0);
+
+				image_item newItem;
+
+				// NOTE(Andrey): We add empty images to the DB too,
+				// to avoid processing them each time
+
+				newItem.image = normalized;
+				newItem.label = m.label;
+				newItem.path = newPath;
+				normalizedId = idb.addImage(newItem);
+
+				cv::imshow("w", normalized);
+				cv::waitKey(1);
+			}
+		}
+
+		if (!idb.items[normalizedId].image.empty()) {
+			resultIds.push_back(normalizedId);
 		}
 	}
 
-	dataset.images = newImages;
-	dataset.labels = newLabels;
+	return resultIds;
 }
-*/
+
+#endif // USE_DLIB
 
 void visualizeEigenSpaceDots(
 		const vector<Mat> &trainVectors,
@@ -1130,8 +1152,10 @@ struct FaceRecSystem
 	CascadeClassifier faceClassifier;
 	CascadeClassifier eyeClassifier;
 
-	//dlib::frontal_face_detector detector;
-	//dlib::shape_predictor pose_model;
+#ifdef USE_DLIB
+	dlib::frontal_face_detector detector;
+	dlib::shape_predictor pose_model;
+#endif
 
 	ImageDB idb;
 
@@ -1160,8 +1184,10 @@ struct FaceRecSystem
 			std::exit(-1);
 		}
 
-		//detector = dlib::get_frontal_face_detector();
-		//dlib::deserialize("../shape_predictor_68_face_landmarks.dat") >> pose_model;
+#ifdef USE_DLIB
+		detector = dlib::get_frontal_face_detector();
+		dlib::deserialize("../shape_predictor_68_face_landmarks.dat") >> pose_model;
+#endif
 
 		idb.load("idb.bin");
 	}
@@ -1212,6 +1238,21 @@ struct FaceRecSystem
 		return asRowMatrix(images, type);
 	}
 
+	vector<int> normalizeFaces(const vector<int> ids)
+	{
+		if (useDlib) {
+#ifdef USE_DLIB
+			return normalizeFacesDlib(idb, ids, detector, pose_model);
+#else
+			CV_Assert(0);
+			return {};
+#endif
+		}
+		else {
+			return normalizeFacesVJ(idb, ids, faceClassifier, eyeClassifier);
+		}
+	}
+
 	void train(const vector<string> &files)
 	{
 		trainIds.resize(0);
@@ -1221,7 +1262,8 @@ struct FaceRecSystem
 	void trainMore(const vector<string> &files)
 	{
 		vector<int> newIds = loadFaceDataset(files);
-		newIds = normalizeFacesVJ(idb, newIds, faceClassifier, eyeClassifier);
+		newIds = normalizeFaces(newIds);
+
 		idb.save("idb.bin");
 
 		trainIds.insert(trainIds.end(), newIds.begin(), newIds.end());
@@ -1261,13 +1303,10 @@ struct FaceRecSystem
 
 		switch (distanceType) {
 			case DistanceType::KNN:
-				chosenLabels = classifyKNN(trainProj, trainLabels, idb.labelNames.size(), testProj, 5);
+				chosenLabels = classifyKNN(trainProj, trainLabels, idb.labelNames.size(), testProj, 3);
 				break;
 			case DistanceType::Mahalanobis:
 				chosenLabels = classifyMahalanobis(trainProj, trainLabels, idb.labelNames.size(), testProj);
-				break;
-			default:
-				CV_Assert(0);
 				break;
 		};
 
@@ -1292,7 +1331,7 @@ struct FaceRecSystem
 	void test(const vector<string> &files)
 	{
 		testIds = loadFaceDataset(files);
-		testIds = normalizeFacesVJ(idb, testIds, faceClassifier, eyeClassifier);
+		testIds = normalizeFaces(testIds);
 		idb.save("idb.bin");
 		testData = ids2RowMatrix(testIds, CV_32F);
 
@@ -1421,6 +1460,25 @@ int main(int argc, char *argv[])
 		}
 		else if (words[0] == "show_test" || words[0] == "shtst") {
 			facerec.showTestProjections();
+		}
+		else if (words[0] == "dlib") {
+			if (words.size() > 1) {
+				if (words[1] == "0") {
+					facerec.useDlib = false;
+				}
+				else if (words[1] == "1") {
+#ifdef USE_DLIB
+					facerec.useDlib = true;
+#else
+					std::cout << "No Dlib support. Compile with USE_DLIB to enable." << std::endl;
+#endif
+				}
+				else {
+					std::cout << "0 or 1 expected." << std::endl;
+				}
+			}
+
+			std::cout << (facerec.useDlib ? "1" : "0") << std::endl;
 		}
 		else if (words[0] == "dist_type") {
 			if (words.size() > 1) {
