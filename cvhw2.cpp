@@ -263,6 +263,7 @@ struct ImageDB
 error:
 		std::cout << "Reading error" << std::endl;
 		fclose(f);
+		clear();
 	}
 
 	void save(const string &path) const
@@ -861,46 +862,38 @@ void visualizeEigenSpaceDots(
 }
 
 void visualizeEigenSpaceLines(
-		const vector<Mat> &trainVectors,
+		const Mat &trainProj,
 		const vector<int> &trainLabels,
-		const vector<Mat> &testVectors,
-		const vector<int> &testLabels)
+		const Mat &testProj,
+		const vector<int> &testChosenLabels,
+		const vector<int> &testCorrectLabels)
 {
-	int axeCount = 0;
+	int axeCount = std::max(trainProj.cols, testProj.cols);
 
-	if (trainVectors.size() > 0) {
-		axeCount = trainVectors[0].total();
+	double globalMin;
+	double globalMax;
+
+	{
+		double trainMin;
+		double trainMax;
+
+		double testMin;
+		double testMax;
+
+		cv::minMaxIdx(trainProj, &trainMin, &trainMax);
+		cv::minMaxIdx(testProj, &testMin, &testMax);
+
+		globalMin = std::min(trainMin, testMin);
+		globalMax = std::max(trainMax, testMax);
 	}
-	else if (testVectors.size() > 0) {
-		axeCount = testVectors[0].total();
-	}
 
-	vector<float> axisMin(axeCount, FLT_MAX);
-	vector<float> axisMax(axeCount, FLT_MIN);
+	vector<int> nonEmptyLabels{trainLabels};
+	nonEmptyLabels.insert(nonEmptyLabels.end(), testChosenLabels.begin(), testChosenLabels.end());
+	nonEmptyLabels.insert(nonEmptyLabels.end(), testCorrectLabels.begin(), testCorrectLabels.end());
+	std::sort(nonEmptyLabels.begin(), nonEmptyLabels.end());
+	nonEmptyLabels.erase(std::unique(nonEmptyLabels.begin(), nonEmptyLabels.end()), nonEmptyLabels.end());
 
-	auto updateAxisMinMax = [axeCount](const vector<Mat> &vectors, vector<float> &axisMin, vector<float> &axisMax) {
-		for (int i = 0; i < (int)vectors.size(); i++) {
-			Mat m = vectors[i];
-
-			CV_Assert(vectors[i].type() == CV_32F);
-			CV_Assert(axeCount == (int)m.total());
-
-			for (int axis = 0; axis < (int)m.total(); axis++) {
-				float val = m.at<float>(axis);
-
-				axisMin[axis] = std::min(axisMin[axis], val);
-				axisMax[axis] = std::max(axisMax[axis], val);
-			}
-		}
-	};
-
-	updateAxisMinMax(trainVectors, axisMin, axisMax);
-	updateAxisMinMax(testVectors, axisMin, axisMax);
-
-	float globalMin = *std::min_element(axisMin.begin(), axisMin.end());
-	float globalMax = *std::max_element(axisMax.begin(), axisMax.end());
-
-	Mat canvas{1024 / 4, 1024, CV_8UC3};
+	Mat canvas{1024 / 2, 1024, CV_8UC3};
 
 	vector<Scalar> colorPalette = {
 		{180, 119, 31},
@@ -915,13 +908,11 @@ void visualizeEigenSpaceLines(
 		{207, 190, 23},
 	};
 
-	int shownLabel = -1;
-	bool uniformScaling = false;
-
+	int shownLabelIndex = -1;
 	int pressedKey = 0;
 
 	while (pressedKey != 'q') {
-
+		int shownLabel = shownLabelIndex < 0 ? -1 : nonEmptyLabels[shownLabelIndex];
 		canvas.setTo(Scalar{52, 44, 40});
 
 		for (int i = 0; i < axeCount; i++) {
@@ -933,54 +924,71 @@ void visualizeEigenSpaceLines(
 
 		vector<Point2i> featureLine(axeCount);
 
-		for (int i = 0; i < (int)trainVectors.size(); i++) {
-			const Mat &v = trainVectors[i];
+		auto drawLine = [&canvas, &featureLine, globalMin, globalMax, axeCount](const Mat& yCoords, Scalar color, int thickness = 1) {
+			for (int axis = 0; axis < axeCount; axis++) {
+				featureLine[axis] = Point2i {
+					canvas.cols * (axis) / (axeCount - 1),
+					(int)((yCoords.at<float>(axis) - globalMin) / (globalMax - globalMin) * canvas.rows)
+				};
+			}
+
+			cv::polylines(canvas, {featureLine}, false, color, thickness);
+		};
+
+		for (int i = 0; i < trainProj.rows; i++) {
 			int label = trainLabels[i];
 
-			if (shownLabel >= 0 && shownLabel != label)
-				continue;
+			Scalar color;
+			int thickness = 1;
 
-			Scalar drawingColor = label < 0 ?
-				Scalar{0} : colorPalette[label % colorPalette.size()];
-
-			for (int axis = 0; axis < axeCount; axis++) {
-				Point2i p;
-
-				float yMin = uniformScaling ? globalMin : axisMin[axis];
-				float yMax = uniformScaling ? globalMax : axisMax[axis];
-
-				p.x = canvas.cols * (axis) / (axeCount - 1);
-				p.y = (v.at<float>(axis) - yMin) / (yMax - yMin) * canvas.rows;
-
-				featureLine[axis] = p;
+			if (shownLabel < 0) {
+				color = (label >= 0) ? colorPalette[label % colorPalette.size()] : Scalar{0};
+				thickness = 1;
+			}
+			else if (shownLabel == label) {
+				color = Scalar{200, 200, 200};
+				thickness = 2;
+			}
+			else {
+				thickness = 0;
 			}
 
-			cv::polylines(canvas, {featureLine}, false, drawingColor, 1);
+			if (thickness > 0) {
+				drawLine(trainProj.row(i), color, thickness);
+			}
 		}
 
-		for (int i = 0; i < (int)testVectors.size(); i++) {
-			const Mat &v = testVectors[i];
-			int label = testLabels[i];
+		for (int i = 0; i < testProj.rows; i++) {
+			int correctLabel = testChosenLabels[i];
+			int chosenLabel = testCorrectLabels[i];
 
-			if (shownLabel >= 0 && shownLabel != label)
-				continue;
+			Scalar color;
+			int thickness = 1;
 
-			Scalar drawingColor = label < 0 ?
-				Scalar{0} : colorPalette[label % colorPalette.size()];
-
-			for (int axis = 0; axis < axeCount; axis++) {
-				Point2i p;
-
-				float yMin = uniformScaling ? globalMin : axisMin[axis];
-				float yMax = uniformScaling ? globalMax : axisMax[axis];
-
-				p.x = canvas.cols * (axis) / (axeCount - 1);
-				p.y = (v.at<float>(axis) - yMin) / (yMax - yMin) * canvas.rows;
-
-				featureLine[axis] = p;
+			if (shownLabel < 0) {
+				color = (correctLabel >= 0) ? colorPalette[correctLabel % colorPalette.size()] : Scalar{0};
+				thickness = 2;
+			}
+			else if (shownLabel == correctLabel) {
+				if (chosenLabel == correctLabel) {
+					color = Scalar{0, 200, 0};
+				}
+				else {
+					color = Scalar{0, 0, 180};
+				}
+				thickness = 2;
+			}
+			else if (chosenLabel == shownLabel) {
+				color = Scalar{0};
+				thickness = 2;
+			}
+			else {
+				thickness = 0;
 			}
 
-			cv::polylines(canvas, {featureLine}, false, drawingColor, 2);
+			if (thickness > 0) {
+				drawLine(testProj.row(i), color, thickness);
+			}
 		}
 
 		cv::imshow("Eigenspace", canvas);
@@ -988,16 +996,12 @@ void visualizeEigenSpaceLines(
 
 		switch (pressedKey) {
 			case 'j':
-				shownLabel++;
+				if (shownLabelIndex < (int)nonEmptyLabels.size() - 1)
+					shownLabelIndex++;
 				break;
 			case 'k':
-				if (shownLabel > -1)
-					shownLabel--;
-				else
-					std::cout << '\a';
-				break;
-			case 'u':
-				uniformScaling = !uniformScaling;
+				if (shownLabelIndex > -1)
+					shownLabelIndex--;
 				break;
 		}
 	}
@@ -1166,7 +1170,7 @@ struct FaceRecSystem
 	Mat trainData;
 	Mat testData;
 
-	int maxDimensions = 32;
+	int maxDimensions = 12;
 	cv::PCA pca;
 
 	Mat trainProj;
@@ -1355,6 +1359,7 @@ struct FaceRecSystem
 
 	void predict()
 	{
+		// TODO: Remove the list
 		vector<Mat> trainProjectionsList;
 		vector<int> trainLabels;
 
@@ -1375,7 +1380,7 @@ struct FaceRecSystem
 
 		switch (distanceType) {
 			case DistanceType::KNN:
-				chosenLabels = classifyKNN(trainProj, trainLabels, idb.labelNames.size(), testProj, 3);
+				chosenLabels = classifyKNN(trainProj, trainLabels, idb.labelNames.size(), testProj, 1);
 				break;
 			case DistanceType::Mahalanobis:
 				chosenLabels = classifyMahalanobis(trainProj, trainLabels, idb.labelNames.size(), testProj);
@@ -1396,8 +1401,7 @@ struct FaceRecSystem
 		printf("%2.01f%% (%d/%d) correct\n", correct * 100.0f / chosenLabels.size(), correct, (int)chosenLabels.size());
 		fflush(stdout);
 
-		visualizeEigenSpaceLines(trainProjectionsList, trainLabels, testProjectionsList, testLabels);
-		visualizeEigenSpaceDots(trainProjectionsList, trainLabels, testProjectionsList, testLabels);
+		visualizeEigenSpaceLines(trainProj, trainLabels, testProj, chosenLabels, testLabels);
 	}
 
 	void test(const vector<string> &files)
@@ -1556,10 +1560,10 @@ int main(int argc, char *argv[])
 		}
 		else if (words[0] == "dist_type") {
 			if (words.size() > 1) {
-				if (words[1] == "knn" || words[1] == "KNN") {
+				if (words[1] == "knn" || words[1] == "KNN" || words[1] == "k") {
 					facerec.distanceType = FaceRecSystem::DistanceType::KNN;
 				}
-				else if (words[1] == "mahalanobis" || words[1] == "Mahalanobis" || words[1] == "m" || words[1] == "M") {
+				else if (words[1] == "mahalanobis" || words[1] == "Mahalanobis" || words[1] == "m") {
 					facerec.distanceType = FaceRecSystem::DistanceType::Mahalanobis;
 				}
 				else {
