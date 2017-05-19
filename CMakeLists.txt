@@ -10,7 +10,7 @@ include_directories(${OpenCV_INCLUDE_DIRS})
 
 include(./dlib/dlib/cmake)
 
-add_executable(cvhw2 cvhw2.cpp)
+add_executable(cvhw2 cvhw2.cpp list_directory.cpp)
 target_link_libraries(cvhw2 ${OpenCV_LIBS} dlib)
 
 if (CMAKE_COMPILER_IS_GNUCC)

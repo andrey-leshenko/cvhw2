@@ -1,3 +1,5 @@
+#include "list_directory.hpp"
+
 #include <iostream>
 #include <vector>
 #include <map>
@@ -8,6 +10,7 @@
 #include <utility>
 #include <thread>
 
+#define _CRT_SECURE_NO_DEPRECATE
 #include <stdio.h>
 #include <stdint.h>
 
@@ -23,108 +26,42 @@
 #include <dlib/gui_widgets.h>
 #endif
 
-#ifdef __linux__
-
-#include <dirent.h>
-#include <errno.h>
-
-#elif _WIN32
-#endif
-
-typedef int8_t s8;
-typedef int16_t s16;
-typedef int32_t s32;
-typedef int64_t s64;
-
-typedef uint8_t u8;
-typedef uint16_t u16;
-typedef uint32_t u32;
-typedef uint64_t u64;
-
 using std::vector;
 using std::string;
 using std::map;
 using std::pair;
 
 using cv::Mat;
-using cv::Scalar;
-using cv::InputArray;
-using cv::OutputArray;
-using cv::Point2d;
-using cv::Point2f;
-using cv::Point2i;
-using cv::Point3d;
-using cv::Point3f;
-using cv::Point3i;
-using cv::Vec2d;
-using cv::Vec2f;
-using cv::Vec3f;
-using cv::Vec4f;
-using cv::Vec4i;
-using cv::Size;
-using cv::Size2i;
-using cv::Range;
-using cv::Affine3d;
-using cv::Affine3f;
-using cv::Rect2i;
-using cv::String;
-
 using cv::Mat1i;
 using cv::Mat1f;
-using cv::Mat2f;
-using cv::Mat1b;
-using cv::Mat3b;
-using cv::Mat3f;
 
-using cv::Vec3b;
-
-using cv::Point;
-using cv::Rect;
 using cv::CascadeClassifier;
 using cv::PCA;
 using cv::FileStorage;
+
+using cv::Scalar;
+using cv::InputArray;
+using cv::OutputArray;
+using cv::Point2f;
+using cv::Point2i;
+using cv::Rect;
+using cv::Size;
+using cv::String;
 
 #define QQQ do {std::cerr << "QQQ " << __FUNCTION__ << " " << __LINE__ << std::endl;} while(0)
 
 void printTimeSinceLastCall(const char* message)
 {
-	static s64 freq = static_cast<int>(cv::getTickFrequency());
-	static s64 last = cv::getTickCount();
+	static int64 freq = static_cast<int>(cv::getTickFrequency());
+	static int64 last = cv::getTickCount();
 
-	s64 curr = cv::getTickCount();
-	s64 delta = curr - last;
+	int64 curr = cv::getTickCount();
+	int64 delta = curr - last;
 	double deltaMs = (double)delta / freq * 1000;
 	printf("%s: %.4f\n", message, deltaMs);
 	fflush(stdout);
 
 	last = curr;
-}
-
-int listDirectory(const char* path, vector<string> &files)
-{
-#ifdef __linux__
-	DIR *dp;
-	struct dirent *dirp;
-
-	files.resize(0);
-
-	dp = opendir(path);
-
-	if (!dp) {
-		std::cout << errno << std::endl;
-		return errno;
-	}
-
-	while ((dirp = readdir(dp))) {
-		files.push_back(dirp->d_name);
-	}
-
-	return 0;
-#elif _WIN32
-	NOT IMPLEMENTED
-#else
-	NOT IMPLEMENTED
-#endif
 }
 
 Mat asRowMatrix(cv::InputArrayOfArrays src, int rtype, double alpha=1, double beta=0) {
@@ -275,10 +212,9 @@ error:
 			return;
 		}
 
-		image_db_header dbHeader = {
-			.itemCount = items.size(),
-			.labelCount = labelNames.size(),
-		};
+		image_db_header dbHeader;
+		dbHeader.itemCount = items.size();
+		dbHeader.labelCount = labelNames.size();
 
 		if (fwrite(&dbHeader, sizeof(dbHeader), 1, f) != 1)
 			goto error;
@@ -286,14 +222,13 @@ error:
 		for (const image_item &m : items) {
 			const char *c_path = m.path.c_str();
 
-			image_item_header itemHeader = {
-				.label = m.label,
-				.imageType = m.image.type(),
-				.imageRows = m.image.rows,
-				.imageCols = m.image.cols,
-				.imageSize = m.image.total() * m.image.elemSize(),
-				.pathSize = strlen(c_path) + 1,
-			};
+			image_item_header itemHeader;
+			itemHeader.label = m.label;
+			itemHeader.imageType = m.image.type();
+			itemHeader.imageRows = m.image.rows;
+			itemHeader.imageCols = m.image.cols;
+			itemHeader.imageSize = m.image.total() * m.image.elemSize();
+			itemHeader.pathSize = strlen(c_path) + 1;
 
 			if (fwrite(&itemHeader, sizeof(itemHeader), 1, f) != 1)
 				goto error;
@@ -306,9 +241,8 @@ error:
 		for (const string &label : labelNames) {
 			const char *c_label = label.c_str();
 
-			string_header header = {
-				.size = strlen(c_label) + 1,
-			};
+			string_header header;
+			header.size = strlen(c_label) + 1;
 
 			if (fwrite(&header, sizeof(header), 1, f) != 1)
 				goto error;
@@ -1423,6 +1357,7 @@ struct FaceRecSystem
 	{
 		if (trainIds.size() == 0) {
 			std::cout << "No train data." << std::endl;
+			return;
 		}
 
 		int imageRows = idb.items[trainIds[0]].image.rows;
