@@ -1042,7 +1042,7 @@ struct FaceRecSystem
 		for (int i = 0; i < (int)chosenLabels.size(); i++) {
 			int chosen = chosenLabels[i];
 			int realLabel = idb.items[testIds[i]].label;
-			std::cout << realLabel << " -> " << chosen << ((chosen == realLabel) ? "" : " X") << std::endl;
+			std::cout << idb.labelNames[realLabel] << " -> " << idb.labelNames[chosen] << ((chosen == realLabel) ? "" : " X") << std::endl;
 			if (idb.items[testIds[i]].label == chosenLabels[i]) {
 				correct++;
 			}
@@ -1228,6 +1228,25 @@ int main(int argc, char *argv[])
 			else if (facerec.distanceType == FaceRecSystem::DistanceType::Mahalanobis) {
 				std::cout << "mahalanobis" << std::endl;
 			}
+		}
+		else if (words[0] == "pca_n") {
+			if (words.size() > 1) {
+				try {
+					int n = std::stoi(words[1]);
+
+					if (n >= 1) {
+						facerec.maxDimensions = n;
+					}
+					else {
+						std::cout << "The number of dimensions can't be less than 1." <<std::endl;
+					}
+				}
+				catch(...) {
+					std::cout << "Integer expected" << std::endl;
+				}
+			}
+
+			std::cout << facerec.maxDimensions << std::endl;
 		}
 		else {
 			std::cout << "Unkown command '" << words[0] << "'. Skipping to next line." << std::endl;
