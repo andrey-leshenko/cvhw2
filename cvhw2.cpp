@@ -12,6 +12,8 @@
 
 #include <opencv2/opencv.hpp>
 
+//#define SHOW_FACEDETECTION
+
 //#define USE_DLIB
 
 #ifdef USE_DLIB
@@ -101,7 +103,7 @@ void normalizeFace(
 	Mat image;
 
 	if (_src.type() == CV_8U) {
-		Mat image = _src.getMat();
+		image = _src.getMat();
 	}
 	else if (_src.type() == CV_8UC3) {
 		cv::cvtColor(_src.getMat(), image, cv::COLOR_BGR2GRAY);
@@ -143,7 +145,11 @@ void normalizeFace(
 		dst.colRange(dst.cols - dst.cols * 2 / 10, dst.cols).setTo(0);
 
 		cv::imshow("w", dst);
+#ifdef SHOW_FACEDETECTION
+		cv::waitKey(0);
+#else
 		cv::waitKey(1);
+#endif
 	}
 	else {
 		Mat display;
@@ -154,7 +160,11 @@ void normalizeFace(
 		}
 
 		cv::imshow("w", display);
+#ifdef SHOW_FACEDETECTION
+		cv::waitKey(0);
+#else
 		cv::waitKey(1);
+#endif
 	}
 }
 
@@ -322,29 +332,30 @@ vector<int> normalizeFacesDlib(
 		int normalizedId = idb.getImageId(newPath);
 
 		if (normalizedId < 0) {
+			Mat normalized;
 			vector<Mat> faces = alignImageFaces(m.image, detector, pose_model);
 
 			if (faces.size() >= 1) {
-				Mat normalized = faces[0];
+				normalized = faces[0];
 				cv::cvtColor(normalized, normalized, cv::COLOR_BGR2GRAY);
 				cv::normalize(normalized, normalized, 0, 255, cv::NORM_MINMAX, CV_8UC1);
 				cv::equalizeHist(normalized, normalized);
 				normalized.colRange(0, normalized.cols * 2 / 10).setTo(0);
 				normalized.colRange(normalized.cols - normalized.cols * 2 / 10, normalized.cols).setTo(0);
 
-				image_item newItem;
-
-				// NOTE(Andrey): We add empty images to the DB too,
-				// to avoid processing them each time
-
-				newItem.image = normalized;
-				newItem.label = m.label;
-				newItem.path = newPath;
-				normalizedId = idb.addImage(newItem);
-
 				cv::imshow("w", normalized);
 				cv::waitKey(1);
 			}
+
+			image_item newItem;
+
+			// NOTE(Andrey): We add empty images to the DB too,
+			// to avoid processing them each time
+
+			newItem.image = normalized;
+			newItem.label = m.label;
+			newItem.path = newPath;
+			normalizedId = idb.addImage(newItem);
 		}
 
 		if (!idb.items[normalizedId].image.empty()) {
@@ -517,7 +528,8 @@ void visualizeEigenSpaceLines(
 		const vector<int> &trainLabels,
 		const Mat &testProj,
 		const vector<int> &testChosenLabels,
-		const vector<int> &testCorrectLabels)
+		const vector<int> &testCorrectLabels,
+		const vector<string> &labelNames)
 {
 	int axeCount = std::max(trainProj.cols, testProj.cols);
 
@@ -640,6 +652,11 @@ void visualizeEigenSpaceLines(
 			if (thickness > 0) {
 				drawLine(testProj.row(i), color, thickness);
 			}
+		}
+
+		{
+			string title = shownLabel < 0 ? "ALL" : labelNames[shownLabel];
+			cv::setWindowTitle("Eigenspace", "showing label " + title);
 		}
 
 		cv::imshow("Eigenspace", canvas);
@@ -923,17 +940,21 @@ struct FaceRecSystem
 
 	vector<int> normalizeFaces(const vector<int> ids)
 	{
+		vector<int> normalizedFaceIds;
+
 		if (useDlib) {
 #ifdef USE_DLIB
-			return normalizeFacesDlib(idb, ids, detector, pose_model);
+			normalizedFaceIds = normalizeFacesDlib(idb, ids, detector, pose_model);
 #else
-			CV_Assert(0);
-			return {};
 #endif
 		}
 		else {
-			return normalizeFacesVJ(idb, ids, faceClassifier);
+			normalizedFaceIds = normalizeFacesVJ(idb, ids, faceClassifier);
 		}
+
+		std::cout << "Found " << normalizedFaceIds.size() << " out of " << ids.size() << " faces." << std::endl;
+
+		return normalizedFaceIds;
 	}
 
 	void train(const vector<string> &files)
@@ -1051,7 +1072,7 @@ struct FaceRecSystem
 		printf("%2.01f%% (%d/%d) correct\n", correct * 100.0f / chosenLabels.size(), correct, (int)chosenLabels.size());
 		fflush(stdout);
 
-		visualizeEigenSpaceLines(trainProj, trainLabels, testProj, chosenLabels, testLabels);
+		visualizeEigenSpaceLines(trainProj, trainLabels, testProj, chosenLabels, testLabels, idb.labelNames);
 	}
 
 	void test(const vector<string> &files)
@@ -1066,6 +1087,80 @@ struct FaceRecSystem
 		if (trainIds.size() > 0 && testIds.size() > 0) {
 			testProj = pca.project(testData);
 			predict();
+		}
+		else
+		{
+			std::cout << "Not enough data to set." << std::endl;
+		}
+	}
+
+	void testSingleImage(const string &path)
+	{
+		image_item item;
+
+		Mat image = cv::imread("../images/" + path);
+
+		if (image.empty()) {
+			std::cout << "ERROR: Couldn't load image '" << path << "'" << std::endl;
+			return;
+		}
+
+		item.image = image;
+		item.path = path;
+		item.label = 0;
+
+		int id = idb.addImage(item);
+
+		testIds = vector<int>{ id };
+		testIds = normalizeFaces(testIds);
+
+		if (testIds.size() == 0)
+		{
+			Mat display = image;
+			if (display.rows > 10)
+			{
+				display.rowRange(0, 10).setTo(Scalar{ 0, 0, 255 });
+			}
+			cv::imshow("w", image);
+			std::cout << "Couldn't find face in image" << std::endl;
+			cv::setWindowTitle("w", "Couldn't find face in image");
+			cv::waitKey(0);
+
+			return;
+		}
+
+		testData = ids2RowMatrix(testIds, CV_32F);
+
+		if (trainIds.size() > 0 && testIds.size() > 0) {
+			testProj = pca.project(testData);
+
+			vector<int> trainLabels;
+
+			for (int i = 0; i < trainProj.rows; i++) {
+				trainLabels.push_back(idb.items[trainIds[i]].label);
+			}
+
+			vector<int> chosenLabels;
+
+			switch (distanceType) {
+			case DistanceType::KNN:
+				chosenLabels = classifyKNN(trainProj, trainLabels, idb.labelNames.size(), testProj, 1);
+				break;
+			case DistanceType::Mahalanobis:
+				chosenLabels = classifyMahalanobis(trainProj, trainLabels, idb.labelNames.size(), testProj);
+				break;
+			};
+
+			std::cout << "Recognized as " + idb.labelNames[chosenLabels[0]] << std::endl;
+
+			cv::imshow("w", image);
+			cv::setWindowTitle("w", "Recognized as " + idb.labelNames[chosenLabels[0]]);
+
+			cv::imshow("face", idb.items[testIds[0]].image);
+
+			cv::waitKey(0);
+
+			visualizeEigenSpaceLines(trainProj, trainLabels, testProj, chosenLabels, chosenLabels, idb.labelNames);
 		}
 	}
 
@@ -1179,7 +1274,16 @@ int main(int argc, char *argv[])
 			facerec.trainMore(vector<string>{words.begin() + 1, words.end()});
 		}
 		else if (words[0] == "test" || words[0] == "tst") {
-			facerec.test(vector<string>{words.begin() + 1, words.end()});
+			if (words.size() == 2 && words[1].find('.') != string::npos)
+			{
+				// Single file
+				facerec.testSingleImage(words[1]);
+			}
+			else
+			{
+				// Dataset
+				facerec.test(vector<string>{words.begin() + 1, words.end()});
+			}
 		}
 		else if (words[0] == "show_eigenfaces" || words[0] == "eig") {
 			facerec.showEigenfaces();
