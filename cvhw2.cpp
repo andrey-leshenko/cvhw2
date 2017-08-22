@@ -562,7 +562,7 @@ void visualizeEigenSpaceLines(
 	int shownLabelIndex = -1;
 	int pressedKey = 0;
 
-	while (pressedKey != 'q') {
+	while (pressedKey != 'q' && pressedKey != '\r') {
 		int shownLabel = shownLabelIndex < 0 ? -1 : nonEmptyLabels[shownLabelIndex];
 		canvas.setTo(Scalar{52, 44, 40});
 
